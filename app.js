@@ -23,7 +23,7 @@ import { libraryCategories, quizCategories, quizData } from "./data.js";
 
 // Firebase Console > Project settings > Your apps: ค่า configuration ของโปรเจกต์นี้
 const firebaseConfig = {
-  apiKey: "AIzaSyCCGP_LJE6Aa81Hm1Apuse9BnNd36s061w",
+  apiKey: "AIzaSyB5Qql-yPxd5kQor2KfuMpIP7vnyMuFtCg",
   authDomain: "momoooo-web.firebaseapp.com",
   projectId: "momoooo-web",
   storageBucket: "momoooo-web.firebasestorage.app",
@@ -671,16 +671,10 @@ function startAuroraCanvas() {
 
 async function handleLogin() {
   try {
-    const isMobile = window.innerWidth <= 768
-      || /Android|iPhone|iPad/i.test(navigator.userAgent);
-    if (isMobile) {
-      await signInWithRedirect(auth, provider);
-    } else {
-      await signInWithPopup(auth, provider);
-    }
+    await signInWithPopup(auth, provider);
   } catch (error) {
     console.error(error);
-    showToast("เข้าสู่ระบบไม่สำเร็จ: " + error.code);
+    alert(error.code + " : " + error.message);
   }
 }
 
