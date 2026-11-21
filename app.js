@@ -773,19 +773,6 @@ document.getElementById("addQuizButton").addEventListener("click", openAddQuizMo
 document.getElementById("addAnnouncementButton").addEventListener("click", saveAnnouncement);
 document.getElementById("editAnnouncementButton").addEventListener("click", saveAnnouncement);
 document.getElementById("deleteAnnouncementButton").addEventListener("click", deleteAnnouncement);
-document.getElementById("copyEmailButton").addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText("nattakitnamo1971@gmail.com");
-  } catch {
-    const input = document.createElement("textarea");
-    input.value = "nattakitnamo1971@gmail.com";
-    document.body.appendChild(input);
-    input.select();
-    document.execCommand("copy");
-    input.remove();
-  }
-  showToast("คัดลอกอีเมลแล้ว");
-});
 document.querySelector("[data-close-modal]").addEventListener("click", closeModal);
 modal.addEventListener("click", (event) => { if (event.target === modal) closeModal(); });
 document.addEventListener("keydown", (event) => {
