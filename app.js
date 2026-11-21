@@ -3,6 +3,8 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut,
   onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
@@ -669,7 +671,12 @@ function startAuroraCanvas() {
 
 async function handleLogin() {
   try {
-    await signInWithPopup(auth, provider);
+    const isMobile = window.innerWidth <= 768 || matchMedia("(pointer: coarse)").matches;
+    if (isMobile) {
+      await signInWithRedirect(auth, provider);
+    } else {
+      await signInWithPopup(auth, provider);
+    }
   } catch (error) {
     console.error(error);
     showToast("เข้าสู่ระบบไม่สำเร็จ");
@@ -680,6 +687,19 @@ async function handleLogout() {
   await signOut(auth);
   showToast("ออกจากระบบแล้ว");
 }
+
+getRedirectResult(auth)
+  .then((result) => {
+    if (result?.user) {
+      showToast("กำลังยืนยันสิทธิ์ผู้ดูแลระบบ...");
+    }
+  })
+  .catch((error) => {
+    console.error(error);
+    showToast(error.code === "auth/popup-blocked"
+      ? "เบราว์เซอร์ปิดหน้าล็อกอิน กรุณาลองอีกครั้ง"
+      : "ล็อกอินด้วย Google ไม่สำเร็จ");
+  });
 
 onAuthStateChanged(auth, async (user) => {
   if (!user) {
