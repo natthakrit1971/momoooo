@@ -671,7 +671,8 @@ function startAuroraCanvas() {
 
 async function handleLogin() {
   try {
-    const isMobile = window.innerWidth <= 768 || matchMedia("(pointer: coarse)").matches;
+    const isMobile = window.innerWidth <= 768
+      || /Android|iPhone|iPad/i.test(navigator.userAgent);
     if (isMobile) {
       await signInWithRedirect(auth, provider);
     } else {

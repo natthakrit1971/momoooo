@@ -25,15 +25,16 @@
         <button id="libraryNav" class="nav-tab active" type="button" data-view="library">คลังเนื้อหา</button>
         <button id="quizNav" class="nav-tab" type="button" data-view="quiz">ฝึกทำควิซ</button>
       </nav>
-      <div class="auth-controls">
-        <span id="adminBadge" class="admin-badge" hidden>ADMIN MODE</span>
-        <button id="loginButton" class="icon-button" type="button" title="เข้าสู่ระบบ Google" aria-label="เข้าสู่ระบบ Google">🔑</button>
-        <button id="logoutButton" class="icon-button" type="button" title="ออกจากระบบ" aria-label="ออกจากระบบ" hidden>↗</button>
-      </div>
+      <span id="adminBadge" class="admin-badge" hidden>ADMIN MODE</span>
     </div>
   </header>
 
   <main id="app" class="main-container"></main>
+
+  <div class="floating-auth">
+    <button id="loginButton" class="auth-pill-button" type="button" title="เข้าสู่ระบบ Google" aria-label="เข้าสู่ระบบ Google">เข้าสู่ระบบ</button>
+    <button id="logoutButton" class="auth-pill-button" type="button" title="ออกจากระบบ" aria-label="ออกจากระบบ" hidden>ออกจากระบบ</button>
+  </div>
 
   <div id="adminActions" class="admin-actions" hidden>
     <button id="addContentButton" class="floating-action" type="button">+ เพิ่มเนื้อหา</button>
