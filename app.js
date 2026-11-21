@@ -12,6 +12,7 @@ import {
   getFirestore,
   collection,
   addDoc,
+  setDoc,
   deleteDoc,
   doc,
   onSnapshot,
@@ -83,8 +84,7 @@ function setView(view) {
 
 function subscribeFirestore() {
   onSnapshot(query(collection(db, "contents"), orderBy("createdAt", "desc")), (snapshot) => {
-    contents = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
-      .filter((item) => typeof item.driveLink === "string" && item.driveLink.trim() && item.driveLink.trim() !== "#");
+    contents = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
     if (document.querySelector(".nav-tab.active")?.dataset.view === "library") renderLibrary();
   }, (error) => {
     console.error(error);
@@ -96,6 +96,27 @@ function subscribeFirestore() {
       item.category && item.question && Array.isArray(item.choices) && item.choices.length >= 2
     );
   }, (error) => console.error(error));
+
+  onSnapshot(doc(db, "settings", "announcement"), (snapshot) => {
+    const message = snapshot.exists() ? String(snapshot.data().message || "").trim() : "";
+    renderAnnouncement(message);
+  }, (error) => console.error(error));
+}
+
+function renderAnnouncement(message) {
+  const banner = document.getElementById("announcementBanner");
+  const text = document.getElementById("announcementText");
+  const adminActions = document.getElementById("announcementAdminActions");
+  if (!banner || !text || !adminActions) return;
+
+  if (message) {
+    text.textContent = `📢 ข้อความฝากบอกจาก Admin: ${message}`;
+    banner.hidden = false;
+  } else {
+    text.textContent = "";
+    banner.hidden = true;
+  }
+  adminActions.hidden = !isAdmin;
 }
 
 function renderLibrary() {
@@ -118,7 +139,7 @@ function renderLibrary() {
         </div>
         <label class="search-box">
           <span class="search-icon">⌕</span>
-          <input id="searchInput" type="search" value="${escapeHtml(searchTerm)}" placeholder="ค้นชื่อเรื่องน่ารักๆ" aria-label="ค้นหาเนื้อหา">
+          <input id="searchInput" type="search" value="${escapeHtml(searchTerm)}" placeholder="ค้นหาชื่อเรื่อง..." aria-label="ค้นหาเนื้อหา">
         </label>
       </div>
       <div id="contentGrid" class="content-grid"></div>
@@ -151,7 +172,7 @@ function renderContentCards() {
       <div class="empty-state">
         <span class="empty-icon">☁️</span>
         <h2>ยังไม่มีไฟล์เนื้อหาในขณะนี้</h2>
-        <p>${isAdmin ? "กด + เพิ่มเนื้อหา เพื่อเติมข้อมูลให้ห้องเรียนของเรา" : "เดี๋ยวเจ้าของจะมาเติมชีทให้นะ ✿"}</p>
+        <p>${isAdmin ? "กด + เพิ่มเนื้อหา เพื่อเติมข้อมูลให้ห้องเรียนของเรา" : "เดี๋ยวเจ้าของจะมาเติมเนื้อหาให้เร็วๆ นี้ ✿"}</p>
       </div>
     `;
     return;
@@ -217,7 +238,7 @@ function openContentModal(id) {
         <ul class="detail-list">${sections.map((section) => `<li>${escapeHtml(section)}</li>`).join("")}</ul>
       </div>
     ` : ""}
-    <a class="download-button" href="${escapeHtml(item.driveLink)}" target="_blank" rel="noopener noreferrer">เปิดไฟล์ / ดาวน์โหลด (Google Drive) ☁️</a>
+    ${item.driveLink ? `<a class="download-button" href="${escapeHtml(item.driveLink)}" target="_blank" rel="noopener noreferrer">เปิดไฟล์ / ดาวน์โหลด (Google Drive) ☁️</a>` : ""}
   `;
   openModal();
 }
@@ -242,18 +263,18 @@ function closeModal() {
 function openAddContentModal() {
   if (!isAdmin) return;
   modalContent.innerHTML = `
-    <span class="eyebrow">ADMIN // เพิ่มชีทน่ารัก</span>
+    <span class="eyebrow">ADMIN // เพิ่มเนื้อหาใหม่</span>
     <h2 id="modalTitle">เพิ่มเนื้อหาใหม่</h2>
     <form id="addContentForm" class="admin-form">
-      <label>ชื่อเรื่อง <input name="title" required maxlength="120" placeholder="เช่น ลำดับการตกผลึกโบเวน"></label>
+      <label>ชื่อเรื่อง <input name="title" maxlength="120" placeholder="เช่น ลำดับการตกผลึกโบเวน"></label>
       <label>หมวดหมู่
-        <select name="category" required>
+        <select name="category">
           ${quizCategories.map((category) => `<option value="${category}">${category}</option>`).join("")}
         </select>
       </label>
-      <label>คำอธิบายสั้นๆ <textarea name="description" required maxlength="260" rows="3"></textarea></label>
-      <label>หัวข้อย่อย คั่นด้วยลูกน้ำ <input name="sections" required placeholder="ทฤษฎี, สมบัติแร่, ตัวอย่างโจทย์"></label>
-      <label>ลิงก์ Google Drive <input name="driveLink" type="url" required placeholder="https://drive.google.com/..."></label>
+      <label>คำอธิบายสั้นๆ <textarea name="description" maxlength="260" rows="3"></textarea></label>
+      <label>หัวข้อย่อย คั่นด้วยลูกน้ำ <input name="sections" placeholder="ทฤษฎี, สมบัติแร่, ตัวอย่างโจทย์"></label>
+      <label>ลิงก์ Google Drive <input name="driveLink" type="url" placeholder="https://drive.google.com/..."></label>
       <button class="primary-button" type="submit">บันทึกลงคลัง ✨</button>
     </form>
   `;
@@ -266,17 +287,13 @@ async function saveContent(event) {
   if (!isAdmin) return;
   const form = new FormData(event.currentTarget);
   const payload = {
-    title: String(form.get("title")).trim(),
-    category: String(form.get("category")),
-    description: String(form.get("description")).trim(),
-    sections: String(form.get("sections")).split(/[,，]/).map((item) => item.trim()).filter(Boolean),
-    driveLink: String(form.get("driveLink")).trim(),
+    title: String(form.get("title") || "").trim() || "ไม่มีชื่อเรื่อง",
+    category: String(form.get("category") || "ธรณีวิทยา"),
+    description: String(form.get("description") || "").trim(),
+    sections: String(form.get("sections") || "").split(/[,，]/).map((item) => item.trim()).filter(Boolean),
+    driveLink: String(form.get("driveLink") || "").trim(),
     createdAt: serverTimestamp()
   };
-  if (!payload.title || !payload.description || !payload.sections.length || !payload.driveLink) {
-    showToast("กรอกข้อมูลให้ครบก่อนน้า");
-    return;
-  }
   try {
     await addDoc(collection(db, "contents"), payload);
     closeModal();
@@ -496,7 +513,7 @@ function renderQuizQuestion() {
     const total = quizQuestions.length;
     quizArea.innerHTML = `
       <div class="quiz-card result-card">
-        <div class="score-cloud">☁️<span>${quizScore}/${total}</span><small>คะแนนน่ารัก</small></div>
+        <div class="score-cloud">☁️<span>${quizScore}/${total}</span><small>คะแนนที่ได้</small></div>
         <h2>ชุดควิซจบแล้วน้า 🌸</h2>
         <p>หมวด ${escapeHtml(activeQuizCategory)} · ตอบถูก ${quizScore} จาก ${total} ข้อ</p>
         <div class="result-actions">
@@ -683,6 +700,38 @@ async function handleLogout() {
   showToast("ออกจากระบบแล้ว");
 }
 
+async function saveAnnouncement() {
+  if (!isAdmin) return;
+  const currentText = document.getElementById("announcementText").textContent.replace(/^📢 ข้อความฝากบอกจาก Admin:\s*/, "");
+  const message = prompt("พิมพ์ข้อความฝากบอกจาก Admin", currentText || "");
+  if (message === null) return;
+  const trimmed = message.trim();
+  try {
+    if (!trimmed) {
+      await deleteDoc(doc(db, "settings", "announcement"));
+      showToast("ลบข้อความฝากบอกแล้ว");
+    } else {
+      await setDoc(doc(db, "settings", "announcement"), { message: trimmed }, { merge: true });
+      showToast("บันทึกข้อความฝากบอกแล้ว");
+    }
+  } catch (error) {
+    console.error(error);
+    showToast("บันทึกข้อความฝากบอกไม่สำเร็จ");
+  }
+}
+
+async function deleteAnnouncement() {
+  if (!isAdmin) return;
+  if (!confirm("ต้องการลบข้อความฝากบอกนี้ใช่หรือไม่?")) return;
+  try {
+    await deleteDoc(doc(db, "settings", "announcement"));
+    showToast("ลบข้อความฝากบอกแล้ว");
+  } catch (error) {
+    console.error(error);
+    showToast("ลบข้อความฝากบอกไม่สำเร็จ");
+  }
+}
+
 getRedirectResult(auth)
   .then((result) => {
     if (result?.user) {
@@ -708,6 +757,7 @@ onAuthStateChanged(auth, async (user) => {
   }
   document.getElementById("adminBadge").hidden = !isAdmin;
   document.getElementById("adminActions").hidden = !isAdmin;
+  document.getElementById("announcementAdminActions").hidden = !isAdmin;
   document.getElementById("loginButton").hidden = Boolean(user);
   document.getElementById("logoutButton").hidden = !isAdmin;
   if (document.querySelector(".nav-tab.active")?.dataset.view === "library") renderLibrary();
@@ -720,6 +770,22 @@ document.getElementById("loginButton").addEventListener("click", handleLogin);
 document.getElementById("logoutButton").addEventListener("click", handleLogout);
 document.getElementById("addContentButton").addEventListener("click", openAddContentModal);
 document.getElementById("addQuizButton").addEventListener("click", openAddQuizModal);
+document.getElementById("addAnnouncementButton").addEventListener("click", saveAnnouncement);
+document.getElementById("editAnnouncementButton").addEventListener("click", saveAnnouncement);
+document.getElementById("deleteAnnouncementButton").addEventListener("click", deleteAnnouncement);
+document.getElementById("copyEmailButton").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText("nattakitnamo1971@gmail.com");
+  } catch {
+    const input = document.createElement("textarea");
+    input.value = "nattakitnamo1971@gmail.com";
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand("copy");
+    input.remove();
+  }
+  showToast("คัดลอกอีเมลแล้ว");
+});
 document.querySelector("[data-close-modal]").addEventListener("click", closeModal);
 modal.addEventListener("click", (event) => { if (event.target === modal) closeModal(); });
 document.addEventListener("keydown", (event) => {

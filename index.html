@@ -29,11 +29,20 @@
     </div>
   </header>
 
+  <div id="announcementBanner" class="announcement-banner" hidden>
+    <span id="announcementText"></span>
+    <div id="announcementAdminActions" class="announcement-admin-actions" hidden>
+      <button id="editAnnouncementButton" type="button">แก้ไข</button>
+      <button id="deleteAnnouncementButton" type="button">ลบ</button>
+    </div>
+  </div>
+
   <main id="app" class="main-container"></main>
 
   <div id="adminActions" class="admin-actions" hidden>
     <button id="addContentButton" class="floating-action" type="button">+ เพิ่มเนื้อหา</button>
     <button id="addQuizButton" class="floating-action quiz-action" type="button">+ เพิ่มโจทย์ควิซ</button>
+    <button id="addAnnouncementButton" class="floating-action announcement-action" type="button">+ ข้อความฝากบอก</button>
   </div>
 
   <div id="contentModal" class="modal-backdrop" hidden>
@@ -48,6 +57,15 @@
     <button id="loginButton" class="auth-pill-button" type="button">ล็อกอิน</button>
     <button id="logoutButton" class="auth-pill-button" type="button" hidden>ออกจากระบบ</button>
   </div>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div>
+        <span class="footer-label">ข้อมูลติดต่อ</span>
+        <a href="https://instagram.com/fallslide" target="_blank" rel="noopener noreferrer">Instagram: @fallslide</a>
+      </div>
+      <button id="copyEmailButton" type="button">Email: nattakitnamo1971@gmail.com</button>
+    </div>
+  </footer>
   <script type="module" src="app.js"></script>
 </body>
 </html>
