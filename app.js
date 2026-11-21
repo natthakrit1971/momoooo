@@ -680,7 +680,7 @@ async function handleLogin() {
     }
   } catch (error) {
     console.error(error);
-    showToast("เข้าสู่ระบบไม่สำเร็จ");
+    showToast("เข้าสู่ระบบไม่สำเร็จ: " + error.code);
   }
 }
 

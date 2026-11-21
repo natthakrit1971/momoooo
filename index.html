@@ -31,11 +31,6 @@
 
   <main id="app" class="main-container"></main>
 
-  <div class="floating-auth">
-    <button id="loginButton" class="auth-pill-button" type="button" title="เข้าสู่ระบบ Google" aria-label="เข้าสู่ระบบ Google">เข้าสู่ระบบ</button>
-    <button id="logoutButton" class="auth-pill-button" type="button" title="ออกจากระบบ" aria-label="ออกจากระบบ" hidden>ออกจากระบบ</button>
-  </div>
-
   <div id="adminActions" class="admin-actions" hidden>
     <button id="addContentButton" class="floating-action" type="button">+ เพิ่มเนื้อหา</button>
     <button id="addQuizButton" class="floating-action quiz-action" type="button">+ เพิ่มโจทย์ควิซ</button>
@@ -49,6 +44,10 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div class="floating-auth">
+    <button id="loginButton" class="auth-pill-button" type="button">ล็อกอิน</button>
+    <button id="logoutButton" class="auth-pill-button" type="button" hidden>ออกจากระบบ</button>
+  </div>
   <script type="module" src="app.js"></script>
 </body>
 </html>
