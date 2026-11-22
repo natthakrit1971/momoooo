@@ -423,7 +423,7 @@ button { cursor: pointer; }
 
 .content-card h2 {
   margin: 18px 0 8px;
-  padding-right: 38px;
+  padding-right: 84px;
   font-family: "Mali",sans-serif;
   font-size: 18px;
   line-height: 1.45;
@@ -431,7 +431,7 @@ button { cursor: pointer; }
 
 .content-card p {
   margin: 0;
-  padding-right: 40px;
+  padding-right: 84px;
   color: var(--muted);
   font-size: 14px;
   line-height: 1.7;
@@ -451,6 +451,21 @@ button { cursor: pointer; }
   transition: transform .35s cubic-bezier(.34,1.56,.64,1);
 }
 .delete-button:hover { transform: scale(1.1) rotate(-6deg); }
+
+.edit-button {
+  position: absolute;
+  z-index: 5;
+  right: 56px;
+  top: 12px;
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(196,181,253,.28);
+  border-radius: 50%;
+  background: rgba(237,233,254,.92);
+  box-shadow: 0 7px 16px rgba(159,122,195,.12);
+  transition: transform .35s cubic-bezier(.34,1.56,.64,1);
+}
+.edit-button:hover { transform: scale(1.1) rotate(6deg); }
 
 .empty-state {
   grid-column: 1/-1;

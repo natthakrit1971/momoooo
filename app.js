@@ -13,6 +13,7 @@ import {
   collection,
   addDoc,
   setDoc,
+  updateDoc,
   deleteDoc,
   doc,
   onSnapshot,
@@ -185,21 +186,28 @@ function renderContentCards() {
       <span class="category-tag">${escapeHtml(item.category)}</span>
       <h2>${escapeHtml(item.title)}</h2>
       <p>${escapeHtml(item.description)}</p>
-      ${isAdmin ? `<button class="delete-button" type="button" data-delete-id="${escapeHtml(item.id)}" title="ลบเนื้อหา" aria-label="ลบเนื้อหา">🗑️</button>` : ""}
+      ${isAdmin ? `
+        <button class="edit-button" type="button" data-edit-id="${escapeHtml(item.id)}" title="แก้ไขเนื้อหา" aria-label="แก้ไขเนื้อหา">✏️</button>
+        <button class="delete-button" type="button" data-delete-id="${escapeHtml(item.id)}" title="ลบเนื้อหา" aria-label="ลบเนื้อหา">🗑️</button>
+      ` : ""}
     </article>
   `).join("");
 
   grid.querySelectorAll(".content-card").forEach((card) => {
     card.addEventListener("click", (event) => {
-      if (!event.target.closest(".delete-button")) openContentModal(card.dataset.contentId);
+      if (!event.target.closest(".delete-button, .edit-button")) openContentModal(card.dataset.contentId);
     });
     card.addEventListener("keydown", (event) => {
+      if (event.target !== card) return;
       if (event.key === "Enter" || event.key === " ") openContentModal(card.dataset.contentId);
     });
     addCardSpring(card);
   });
   grid.querySelectorAll(".delete-button").forEach((button) => {
     button.addEventListener("click", () => deleteContent(button.dataset.deleteId));
+  });
+  grid.querySelectorAll(".edit-button").forEach((button) => {
+    button.addEventListener("click", () => openEditContentModal(button.dataset.editId));
   });
 }
 
@@ -301,6 +309,60 @@ async function saveContent(event) {
   } catch (error) {
     console.error(error);
     showToast("บันทึกไม่สำเร็จ กรุณาตรวจสอบสิทธิ์ Firestore");
+  }
+}
+
+function openEditContentModal(id) {
+  if (!isAdmin) return;
+  const item = contents.find((entry) => entry.id === id);
+  if (!item) {
+    showToast("ไม่พบเนื้อหาที่ต้องการแก้ไข");
+    return;
+  }
+
+  const sections = Array.isArray(item.sections) ? item.sections.join(", ") : "";
+  modalContent.innerHTML = `
+    <span class="eyebrow">ADMIN // แก้ไขเนื้อหา</span>
+    <h2 id="modalTitle">แก้ไขเนื้อหา</h2>
+    <form id="editContentForm" class="admin-form">
+      <label>ชื่อเรื่อง <input name="title" maxlength="120" value="${escapeHtml(item.title || "")}" placeholder="เช่น ลำดับการตกผลึกโบเวน"></label>
+      <label>หมวดหมู่
+        <select name="category">
+          ${quizCategories.map((category) => `
+            <option value="${category}" ${item.category === category ? "selected" : ""}>${category}</option>
+          `).join("")}
+        </select>
+      </label>
+      <label>คำอธิบายสั้นๆ <textarea name="description" maxlength="260" rows="3">${escapeHtml(item.description || "")}</textarea></label>
+      <label>หัวข้อย่อย คั่นด้วยลูกน้ำ <input name="sections" value="${escapeHtml(sections)}" placeholder="ทฤษฎี, สมบัติแร่, ตัวอย่างโจทย์"></label>
+      <label>ลิงก์ Google Drive <input name="driveLink" type="url" value="${escapeHtml(item.driveLink || "")}" placeholder="https://drive.google.com/..."></label>
+      <button class="primary-button" type="submit">บันทึกการแก้ไข ✨</button>
+    </form>
+  `;
+  openModal();
+  document.getElementById("editContentForm").addEventListener("submit", (event) => updateContent(event, id));
+}
+
+async function updateContent(event, id) {
+  event.preventDefault();
+  if (!isAdmin) return;
+  const form = new FormData(event.currentTarget);
+  const payload = {
+    title: String(form.get("title") || "").trim() || "ไม่มีชื่อเรื่อง",
+    category: String(form.get("category") || "ธรณีวิทยา"),
+    description: String(form.get("description") || "").trim(),
+    sections: String(form.get("sections") || "").split(/[,，]/).map((section) => section.trim()).filter(Boolean),
+    driveLink: String(form.get("driveLink") || "").trim(),
+    updatedAt: serverTimestamp()
+  };
+
+  try {
+    await updateDoc(doc(db, "contents", id), payload);
+    closeModal();
+    showToast("แก้ไขเนื้อหาเรียบร้อยแล้ว ✨");
+  } catch (error) {
+    console.error(error);
+    showToast("แก้ไขเนื้อหาไม่สำเร็จ");
   }
 }
 
