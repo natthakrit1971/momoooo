@@ -16,9 +16,12 @@ import {
   updateDoc,
   deleteDoc,
   doc,
+  getDoc,
+  increment,
   onSnapshot,
   orderBy,
   query,
+  limit,
   serverTimestamp
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 import { libraryCategories, quizCategories, quizData } from "./data.js";
@@ -55,9 +58,16 @@ let quizScore = 0;
 let quizAnswered = false;
 let quizFinished = false;
 let quizCount = 5;
+let quizTotalQuestions = 0;
+let quizSetScore = 0;
+let quizResultSaved = false;
 let isAdmin = false;
+let currentUser = null;
+let playerDisplayName = "";
 let contents = [];
 let firestoreQuizQuestions = [];
+let siteStats = {};
+let leaderboardUnsubscribe = null;
 
 function escapeHtml(value = "") {
   return String(value)
@@ -79,8 +89,15 @@ function setView(view) {
     tab.classList.toggle("active", tab.dataset.view === view);
   });
   document.getElementById("adminActions").hidden = !isAdmin;
-  if (view === "library") renderLibrary();
-  else generateQuizSet();
+  if (view === "library") {
+    if (leaderboardUnsubscribe) {
+      leaderboardUnsubscribe();
+      leaderboardUnsubscribe = null;
+    }
+    renderLibrary();
+  } else {
+    generateQuizSet();
+  }
 }
 
 function subscribeFirestore() {
@@ -102,6 +119,25 @@ function subscribeFirestore() {
     const message = snapshot.exists() ? String(snapshot.data().message || "").trim() : "";
     renderAnnouncement(message);
   }, (error) => console.error(error));
+
+  onSnapshot(doc(db, "settings", "stats"), (snapshot) => {
+    siteStats = snapshot.exists() ? snapshot.data() : {};
+    if (isAdmin && document.querySelector(".nav-tab.active")?.dataset.view === "library") renderLibrary();
+  }, (error) => console.error(error));
+}
+
+function recordPageView() {
+  if (sessionStorage.getItem("visited_momoooo")) return;
+  sessionStorage.setItem("visited_momoooo", "true");
+  setDoc(doc(db, "settings", "stats"), { pageViews: increment(1) }, { merge: true })
+    .catch((error) => {
+      console.error(error);
+      showToast("บันทึกสถิติการเข้าชมไม่สำเร็จ");
+    });
+}
+
+function totalContentViews() {
+  return contents.reduce((total, item) => total + (Number(item.views) || 0), 0);
 }
 
 function renderAnnouncement(message) {
@@ -130,6 +166,12 @@ function renderLibrary() {
         </div>
         <p>วิทยาศาสตร์โลกและอวกาศ 🌙</p>
       </div>
+      ${isAdmin ? `
+        <div class="stats-summary" aria-label="สถิติเข้าเว็บและเปิดไฟล์">
+          <div><span>🌐 ยอดเข้าชมเว็บทั้งหมด</span><strong>${Number(siteStats.pageViews) || 0}</strong></div>
+          <div><span>📚 ยอดเปิดไฟล์รวมทุกเรื่อง</span><strong>${totalContentViews()}</strong></div>
+        </div>
+      ` : ""}
       <div class="controls">
         <div class="category-list" aria-label="หมวดหมู่เนื้อหา">
           ${libraryCategories.map((category) => `
@@ -186,6 +228,7 @@ function renderContentCards() {
       <span class="category-tag">${escapeHtml(item.category)}</span>
       <h2>${escapeHtml(item.title)}</h2>
       <p>${escapeHtml(item.description)}</p>
+      ${isAdmin ? `<span class="content-views">👁️ เปิดดู ${Number(item.views) || 0} ครั้ง</span>` : ""}
       ${isAdmin ? `
         <button class="edit-button" type="button" data-edit-id="${escapeHtml(item.id)}" title="แก้ไขเนื้อหา" aria-label="แก้ไขเนื้อหา">✏️</button>
         <button class="delete-button" type="button" data-delete-id="${escapeHtml(item.id)}" title="ลบเนื้อหา" aria-label="ลบเนื้อหา">🗑️</button>
@@ -235,6 +278,7 @@ function addCardSpring(card) {
 function openContentModal(id) {
   const item = contents.find((entry) => entry.id === id);
   if (!item) return;
+  incrementContentViews(id);
   const sections = Array.isArray(item.sections) ? item.sections : [];
   modalContent.innerHTML = `
     <span class="category-tag">${escapeHtml(item.category)} ${categoryIcon(item.category)}</span>
@@ -248,7 +292,17 @@ function openContentModal(id) {
     ` : ""}
     ${item.driveLink ? `<a class="download-button" href="${escapeHtml(item.driveLink)}" target="_blank" rel="noopener noreferrer">เปิดไฟล์ / ดาวน์โหลด (Google Drive) ☁️</a>` : ""}
   `;
+  modalContent.querySelector(".download-button")?.addEventListener("click", () => incrementContentViews(id));
   openModal();
+}
+
+async function incrementContentViews(id) {
+  try {
+    await updateDoc(doc(db, "contents", id), { views: increment(1) });
+  } catch (error) {
+    console.error(error);
+    showToast("บันทึกสถิติการเปิดไฟล์ไม่สำเร็จ");
+  }
 }
 
 function openModal() {
@@ -505,6 +559,7 @@ function generateProceduralQuestions(category) {
 
 function generateQuizSet() {
   resetQuiz();
+  if (leaderboardUnsubscribe) leaderboardUnsubscribe();
   app.innerHTML = `
     <section class="quiz-layout">
       <div class="page-heading">
@@ -525,6 +580,7 @@ function generateQuizSet() {
         </div>
       </div>
       <div id="quizArea"></div>
+      <section id="leaderboard" class="leaderboard-card" aria-live="polite"></section>
     </section>
   `;
 
@@ -542,6 +598,7 @@ function generateQuizSet() {
     });
   });
   document.getElementById("generateNewQuiz").addEventListener("click", generateQuizSet);
+  subscribeLeaderboard();
   buildQuizQuestions();
   renderQuizQuestion();
 }
@@ -549,8 +606,11 @@ function generateQuizSet() {
 function resetQuiz() {
   quizIndex = 0;
   quizScore = 0;
+  quizSetScore = 0;
+  quizTotalQuestions = 0;
   quizAnswered = false;
   quizFinished = false;
+  quizResultSaved = false;
 }
 
 function buildQuizQuestions() {
@@ -558,13 +618,46 @@ function buildQuizQuestions() {
   const firestoreQuestions = shuffle(firestoreQuizQuestions.filter((item) => item.category === activeQuizCategory));
   const proceduralQuestions = shuffle(generateProceduralQuestions(activeQuizCategory));
   const pool = shuffle([...staticQuestions, ...firestoreQuestions, ...proceduralQuestions]);
-  const target = quizCount === "∞" ? 10 : quizCount;
+  const target = quizCount === "∞" ? 20 : quizCount;
   quizQuestions = [];
 
   while (quizQuestions.length < target) {
     quizQuestions.push(pool[quizQuestions.length % pool.length]);
   }
   quizQuestions = quizQuestions.map((item) => ({ ...item }));
+  quizTotalQuestions += quizQuestions.length;
+}
+
+function subscribeLeaderboard() {
+  const leaderboard = document.getElementById("leaderboard");
+  leaderboardUnsubscribe = onSnapshot(
+    query(collection(db, "leaderboard"), orderBy("totalScore", "desc"), limit(10)),
+    (snapshot) => {
+      leaderboard.innerHTML = `
+        <h2>🏆 แดชบอร์ดจัดอันดับ (Top 10)</h2>
+        ${snapshot.empty ? `<p class="leaderboard-empty">ยังไม่มีผู้เล่นบนกระดาน มาเริ่มเล่นกันเลย! ✨</p>` : `
+          <ol class="leaderboard-list">
+            ${snapshot.docs.map((entry, index) => {
+              const player = entry.data();
+              const medal = ["🥇", "🥈", "🥉"][index] || `${index + 1}.`;
+              return `
+                <li>
+                  <span class="leaderboard-rank">${medal}</span>
+                  <span class="leaderboard-name">${escapeHtml(player.displayName || "ผู้เล่น")}</span>
+                  <span class="leaderboard-rounds">${Number(player.quizzesPlayed) || 0} รอบ</span>
+                  <strong class="leaderboard-score">${Number(player.totalScore) || 0} คะแนน</strong>
+                </li>
+              `;
+            }).join("")}
+          </ol>
+        `}
+      `;
+    },
+    (error) => {
+      console.error(error);
+      leaderboard.textContent = "โหลดอันดับไม่สำเร็จ";
+    }
+  );
 }
 
 function renderQuizQuestion() {
@@ -572,19 +665,34 @@ function renderQuizQuestion() {
   if (!quizArea) return;
 
   if (quizFinished) {
-    const total = quizQuestions.length;
     quizArea.innerHTML = `
       <div class="quiz-card result-card">
-        <div class="score-cloud">☁️<span>${quizScore}/${total}</span><small>คะแนนที่ได้</small></div>
+        <div class="score-cloud">☁️<span>${quizScore}/${quizTotalQuestions}</span><small>คะแนนสะสม</small></div>
         <h2>ชุดควิซจบแล้วน้า 🌸</h2>
-        <p>หมวด ${escapeHtml(activeQuizCategory)} · ตอบถูก ${quizScore} จาก ${total} ข้อ</p>
+        <p>หมวด ${escapeHtml(activeQuizCategory)} · ชุดนี้ได้ ${quizSetScore} คะแนน · สะสม ${quizScore} จาก ${quizTotalQuestions} ข้อ</p>
+        ${currentUser
+          ? `<p class="score-save-status">กำลังบันทึกคะแนนขึ้นอันดับ...</p>`
+          : `<p class="score-save-status">ล็อกอินเพื่อบันทึกคะแนนและเก็บอันดับของคุณ</p>`}
         <div class="result-actions">
+          ${quizCount === "∞" ? `<button id="continueQuiz" class="primary-button" type="button">ลุยต่ออีก 20 ข้อ (สะสมคะแนนต่อ) ∞</button>` : ""}
           <button id="retryQuiz" class="primary-button" type="button">สุ่มชุดใหม่อีกที</button>
+          ${currentUser ? "" : `<button id="loginForLeaderboard" class="secondary-button" type="button">ล็อกอินเพื่อเก็บอันดับ</button>`}
           <button id="backLibrary" class="secondary-button" type="button">ไปคลังชีท</button>
         </div>
       </div>
     `;
+    if (currentUser) saveQuizResult();
+    document.getElementById("continueQuiz")?.addEventListener("click", () => {
+      quizIndex = 0;
+      quizSetScore = 0;
+      quizAnswered = false;
+      quizFinished = false;
+      quizResultSaved = false;
+      buildQuizQuestions();
+      renderQuizQuestion();
+    });
     document.getElementById("retryQuiz").addEventListener("click", generateQuizSet);
+    document.getElementById("loginForLeaderboard")?.addEventListener("click", handleLogin);
     document.getElementById("backLibrary").addEventListener("click", () => setView("library"));
     launchPastelCelebration();
     return;
@@ -632,7 +740,10 @@ function answerQuestion(selectedIndex) {
     if (index === question.answer) button.classList.add("correct");
     if (index === selectedIndex && !correct) button.classList.add("wrong");
   });
-  if (correct) quizScore += 1;
+  if (correct) {
+    quizScore += 1;
+    quizSetScore += 1;
+  }
   document.body.classList.add(correct ? "answer-success" : "answer-error");
   setTimeout(() => document.body.classList.remove("answer-success", "answer-error"), 520);
   document.getElementById("explanationArea").innerHTML = `
@@ -654,6 +765,29 @@ function nextQuestion() {
   } else {
     quizFinished = true;
     renderQuizQuestion();
+  }
+}
+
+async function saveQuizResult() {
+  if (!currentUser || quizResultSaved) return;
+  quizResultSaved = true;
+  const resultBatch = quizTotalQuestions;
+  const status = document.querySelector(".score-save-status");
+  try {
+    await setDoc(doc(db, "leaderboard", currentUser.uid), {
+      email: currentUser.email || "",
+      displayName: playerDisplayName || currentUser.displayName || currentUser.email || "ผู้เล่น",
+      totalScore: increment(quizSetScore),
+      quizzesPlayed: increment(1),
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+    if (status) status.textContent = "บันทึกคะแนนขึ้นอันดับแล้ว! 🎉";
+    showToast("บันทึกคะแนนขึ้นอันดับแล้ว!");
+  } catch (error) {
+    console.error(error);
+    if (quizTotalQuestions === resultBatch) quizResultSaved = false;
+    if (status) status.textContent = "บันทึกคะแนนไม่สำเร็จ กรุณาลองใหม่";
+    showToast("บันทึกคะแนนไม่สำเร็จ");
   }
 }
 
@@ -762,6 +896,43 @@ async function handleLogout() {
   showToast("ออกจากระบบแล้ว");
 }
 
+async function setPlayerDisplayName(user, name) {
+  const displayName = name.trim();
+  if (!displayName) {
+    showToast("กรุณากรอกชื่อที่ต้องการแสดง");
+    return;
+  }
+  try {
+    const playerRef = doc(db, "leaderboard", user.uid);
+    const playerSnapshot = await getDoc(playerRef);
+    const profile = {
+      displayName,
+      email: user.email || "",
+      updatedAt: serverTimestamp()
+    };
+    const savedProfile = playerSnapshot.exists() ? playerSnapshot.data() : {};
+    if (savedProfile.totalScore == null) profile.totalScore = 0;
+    if (savedProfile.quizzesPlayed == null) profile.quizzesPlayed = 0;
+    await setDoc(playerRef, profile, { merge: true });
+    playerDisplayName = displayName;
+    showToast("อัปเดตชื่อบนบอร์ดแล้ว!");
+  } catch (error) {
+    console.error(error);
+    showToast("บันทึกชื่อบนบอร์ดไม่สำเร็จ");
+  }
+}
+
+async function promptPlayerDisplayName(user, existingName = "") {
+  const name = prompt("กรอกชื่อที่ต้องการแสดงบนกระดานจัดอันดับ", existingName);
+  if (name === null) return;
+  await setPlayerDisplayName(user, name);
+}
+
+async function changePlayerDisplayName() {
+  if (!currentUser) return;
+  await promptPlayerDisplayName(currentUser, playerDisplayName || currentUser.displayName || "");
+}
+
 async function saveAnnouncement() {
   if (!isAdmin) return;
   const currentText = document.getElementById("announcementText").textContent.replace(/^📢 ข้อความฝากบอกจาก Admin:\s*/, "");
@@ -797,7 +968,7 @@ async function deleteAnnouncement() {
 getRedirectResult(auth)
   .then((result) => {
     if (result?.user) {
-      showToast("กำลังยืนยันสิทธิ์ผู้ดูแลระบบ...");
+      showToast("ล็อกอินด้วย Google สำเร็จ!");
     }
   })
   .catch((error) => {
@@ -808,20 +979,31 @@ getRedirectResult(auth)
   });
 
 onAuthStateChanged(auth, async (user) => {
-  if (!user) {
-    isAdmin = false;
-  } else if (user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
-    isAdmin = true;
-  } else {
-    isAdmin = false;
-    await signOut(auth);
-    showToast("เฉพาะผู้ดูแลระบบเท่านั้น");
-  }
+  currentUser = user;
+  isAdmin = Boolean(user && user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase());
   document.getElementById("adminBadge").hidden = !isAdmin;
   document.getElementById("adminActions").hidden = !isAdmin;
   document.getElementById("announcementAdminActions").hidden = !isAdmin;
   document.getElementById("loginButton").hidden = Boolean(user);
-  document.getElementById("logoutButton").hidden = !isAdmin;
+  document.getElementById("logoutButton").hidden = !user;
+  document.getElementById("changeDisplayNameButton").hidden = !user;
+  if (!user) {
+    playerDisplayName = "";
+  } else {
+    try {
+      const playerSnapshot = await getDoc(doc(db, "leaderboard", user.uid));
+      const savedName = playerSnapshot.exists() ? playerSnapshot.data().displayName : "";
+      if (savedName) {
+        playerDisplayName = String(savedName);
+      } else {
+        await promptPlayerDisplayName(user, user.displayName || "");
+      }
+      if (quizFinished && !quizResultSaved) saveQuizResult();
+    } catch (error) {
+      console.error(error);
+      showToast("โหลดข้อมูลผู้เล่นไม่สำเร็จ");
+    }
+  }
   if (document.querySelector(".nav-tab.active")?.dataset.view === "library") renderLibrary();
 });
 
@@ -830,6 +1012,7 @@ document.getElementById("libraryNav").addEventListener("click", () => setView("l
 document.getElementById("quizNav").addEventListener("click", () => setView("quiz"));
 document.getElementById("loginButton").addEventListener("click", handleLogin);
 document.getElementById("logoutButton").addEventListener("click", handleLogout);
+document.getElementById("changeDisplayNameButton").addEventListener("click", changePlayerDisplayName);
 document.getElementById("addContentButton").addEventListener("click", openAddContentModal);
 document.getElementById("addQuizButton").addEventListener("click", openAddQuizModal);
 document.getElementById("addAnnouncementButton").addEventListener("click", saveAnnouncement);
@@ -842,5 +1025,6 @@ document.addEventListener("keydown", (event) => {
 });
 
 subscribeFirestore();
+recordPageView();
 startAuroraCanvas();
 renderLibrary();
