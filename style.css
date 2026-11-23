@@ -253,6 +253,7 @@ button { cursor: pointer; }
 
 .category-list,
 .quiz-category-select,
+.quiz-difficulty-select,
 .count-select {
   display: flex;
   gap: 8px;
@@ -270,6 +271,7 @@ button { cursor: pointer; }
 
 .filter-button,
 .quiz-category-select button,
+.quiz-difficulty-select button,
 .count-select button,
 .generate-button,
 .primary-button,
@@ -293,6 +295,7 @@ button { cursor: pointer; }
 
 .filter-button:hover,
 .quiz-category-select button:hover,
+.quiz-difficulty-select button:hover,
 .count-select button:hover {
   transform: translateY(-3px);
   box-shadow: 0 9px 20px rgba(168,85,247,.10);
@@ -300,6 +303,7 @@ button { cursor: pointer; }
 
 .filter-button.active,
 .quiz-category-select button.active,
+.quiz-difficulty-select button.active,
 .count-select button.active {
   background: linear-gradient(135deg, #ddd6fe, #bae6fd, #fbcfe8);
   color: #60487e;
@@ -725,6 +729,7 @@ button { cursor: pointer; }
 .quiz-layout { max-width:760px;margin:0 auto; }
 .quiz-controls { align-items:flex-start;flex-direction:column; }
 .quiz-category-select button,
+.quiz-difficulty-select button,
 .count-select button,
 .generate-button {
   border:1px solid rgba(255,255,255,.84);
@@ -747,6 +752,32 @@ button { cursor: pointer; }
   backdrop-filter:blur(20px);
   padding:clamp(20px,5vw,32px);
   box-shadow:0 16px 38px rgba(159,122,195,.12);
+}
+.quiz-loading {
+  display:grid;
+  min-height:220px;
+  place-content:center;
+  justify-items:center;
+  gap:10px;
+  text-align:center;
+  color:#80669d;
+  font-family:"Mali",sans-serif;
+  font-weight:700;
+}
+.quiz-loading p { margin:0; }
+.quiz-loading-cloud {
+  display:inline-block;
+  font-size:48px;
+  filter:drop-shadow(0 8px 12px rgba(159,122,195,.18));
+  animation:quizCloudFloat 1.8s ease-in-out infinite;
+}
+.quiz-build-error {
+  border-color:rgba(251,113,133,.28);
+  color:#9a5d70;
+  text-align:center;
+}
+@keyframes quizCloudFloat {
+  50% { transform:translateY(-9px); }
 }
 .quiz-progress {
   display:flex;
@@ -830,10 +861,31 @@ button { cursor: pointer; }
   color:var(--muted);
   padding:13px 14px;
   line-height:1.65;
+  white-space:pre-line;
 }
 .explanation.correct { background:rgba(209,250,229,.64);border-color:rgba(52,211,153,.22); }
 .explanation.wrong { background:rgba(255,228,230,.64);border-color:rgba(251,113,133,.22); }
 .explanation strong { color:var(--ink);font-family:"Mali",sans-serif; }
+.explanation-body { white-space:pre-line; }
+.key-terms {
+  display:grid;
+  gap:4px;
+  margin-top:7px;
+  border:1px solid rgba(167,139,250,.28);
+  border-radius:14px;
+  background:linear-gradient(135deg,rgba(237,233,254,.92),rgba(224,242,254,.82));
+  padding:11px 13px;
+}
+.key-terms strong {
+  color:#72558f;
+  font-family:"Mali",sans-serif;
+  font-size:12px;
+}
+.key-terms span {
+  color:#60487e;
+  font-size:13px;
+  font-weight:600;
+}
 .quiz-actions {
   display:flex;
   justify-content:flex-end;

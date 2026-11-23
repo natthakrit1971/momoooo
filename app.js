@@ -38,6 +38,7 @@ const firebaseConfig = {
 };
 
 const ADMIN_EMAIL = "nattakitnamo1971@gmail.com";
+const quizDifficulties = ["ง่าย", "ปานกลาง", "ยาก"];
 
 const firebaseApp = initializeApp(firebaseConfig);
 const auth = getAuth(firebaseApp);
@@ -52,6 +53,9 @@ const toast = document.getElementById("toast");
 let activeLibraryCategory = "ทั้งหมด";
 let searchTerm = "";
 let activeQuizCategory = "ธรณีวิทยา";
+let activeQuizDifficulty = "ง่าย";
+let quizBuildGeneration = 0;
+let quizBuildController = null;
 let quizQuestions = [];
 let quizIndex = 0;
 let quizScore = 0;
@@ -68,6 +72,7 @@ let contents = [];
 let firestoreQuizQuestions = [];
 let siteStats = {};
 let leaderboardUnsubscribe = null;
+const viewedInSession = new Set();
 
 function escapeHtml(value = "") {
   return String(value)
@@ -75,6 +80,20 @@ function escapeHtml(value = "") {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function inferScientificTerms(question, explanation) {
+  const englishTerms = `${question} ${explanation}`.match(/\b[A-Z][A-Za-z]+(?:[- ][A-Za-z]+)*\b/g) || [];
+  return [...new Set(englishTerms)].slice(0, 4).join(", ") || "หลักการทางวิทยาศาสตร์ (Core Scientific Principle)";
+}
+
+function explanationParts(question) {
+  const explanation = String(question.explanation || "");
+  const parts = explanation.split(/\nศัพท์สำคัญ:\s*/);
+  return {
+    body: parts[0],
+    terms: question.keyTerms || parts[1] || inferScientificTerms(question.question || "", explanation)
+  };
 }
 
 function showToast(message) {
@@ -90,6 +109,11 @@ function setView(view) {
   });
   document.getElementById("adminActions").hidden = !isAdmin;
   if (view === "library") {
+    quizBuildGeneration += 1;
+    if (quizBuildController) {
+      quizBuildController.abort();
+      quizBuildController = null;
+    }
     if (leaderboardUnsubscribe) {
       leaderboardUnsubscribe();
       leaderboardUnsubscribe = null;
@@ -126,11 +150,13 @@ function subscribeFirestore() {
   }, (error) => console.error(error));
 }
 
-function recordPageView() {
+function recordPageView(user) {
   if (sessionStorage.getItem("visited_momoooo")) return;
   sessionStorage.setItem("visited_momoooo", "true");
+  if (user?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase()) return;
   setDoc(doc(db, "settings", "stats"), { pageViews: increment(1) }, { merge: true })
     .catch((error) => {
+      sessionStorage.removeItem("visited_momoooo");
       console.error(error);
       showToast("บันทึกสถิติการเข้าชมไม่สำเร็จ");
     });
@@ -278,7 +304,9 @@ function addCardSpring(card) {
 function openContentModal(id) {
   const item = contents.find((entry) => entry.id === id);
   if (!item) return;
-  incrementContentViews(id);
+  if (!isAdmin && auth.currentUser?.email?.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    incrementContentViews(id);
+  }
   const sections = Array.isArray(item.sections) ? item.sections : [];
   modalContent.innerHTML = `
     <span class="category-tag">${escapeHtml(item.category)} ${categoryIcon(item.category)}</span>
@@ -292,14 +320,16 @@ function openContentModal(id) {
     ` : ""}
     ${item.driveLink ? `<a class="download-button" href="${escapeHtml(item.driveLink)}" target="_blank" rel="noopener noreferrer">เปิดไฟล์ / ดาวน์โหลด (Google Drive) ☁️</a>` : ""}
   `;
-  modalContent.querySelector(".download-button")?.addEventListener("click", () => incrementContentViews(id));
   openModal();
 }
 
 async function incrementContentViews(id) {
+  if (viewedInSession.has(id)) return;
+  viewedInSession.add(id);
   try {
     await updateDoc(doc(db, "contents", id), { views: increment(1) });
   } catch (error) {
+    viewedInSession.delete(id);
     console.error(error);
     showToast("บันทึกสถิติการเปิดไฟล์ไม่สำเร็จ");
   }
@@ -443,10 +473,16 @@ function openAddQuizModal() {
           ${quizCategories.map((category) => `<option value="${category}">${category}</option>`).join("")}
         </select>
       </label>
+      <label>ระดับความยาก
+        <select name="difficulty" required>
+          ${quizDifficulties.map((difficulty) => `<option value="${difficulty}">${difficulty}</option>`).join("")}
+        </select>
+      </label>
       <label>คำถาม <textarea name="question" required maxlength="300" rows="3"></textarea></label>
       <label>ตัวเลือก คั่นด้วยลูกน้ำ <input name="choices" required placeholder="ตัวเลือก 1, ตัวเลือก 2, ตัวเลือก 3, ตัวเลือก 4"></label>
       <label>คำตอบที่ถูก (เลข 1-4) <input name="answer" type="number" min="1" max="4" required></label>
-      <label>คำอธิบายเฉลย <textarea name="explanation" required maxlength="500" rows="3"></textarea></label>
+      <label>คำอธิบายเฉลย <textarea name="explanation" required maxlength="500" rows="3" placeholder="อธิบายหลักการและวิธีคิด"></textarea></label>
+      <label>ศัพท์สำคัญ (ภาษาอังกฤษ) <input name="keyTerms" placeholder="เช่น แรงคอริออลิส (Coriolis Force)"></label>
       <button class="primary-button" type="submit">เพิ่มโจทย์เข้าคลัง ✨</button>
     </form>
   `;
@@ -459,12 +495,20 @@ async function saveQuiz(event) {
   if (!isAdmin) return;
   const form = new FormData(event.currentTarget);
   const choices = String(form.get("choices")).split(/[,，]/).map((item) => item.trim()).filter(Boolean);
+  const question = String(form.get("question")).trim();
+  const explanation = String(form.get("explanation")).trim();
+  const keyTerms = String(form.get("keyTerms") || "").trim();
+  const completeExplanation = /(?:^|\n)ศัพท์สำคัญ:/u.test(explanation)
+    ? explanation
+    : `${explanation}\nศัพท์สำคัญ: ${keyTerms || inferScientificTerms(question, explanation)}`;
   const payload = {
     category: String(form.get("category")),
-    question: String(form.get("question")).trim(),
+    difficulty: String(form.get("difficulty") || "ง่าย"),
+    question,
     choices,
     answer: Number(form.get("answer")) - 1,
-    explanation: String(form.get("explanation")).trim(),
+    explanation: completeExplanation,
+    keyTerms,
     createdAt: serverTimestamp()
   };
   if (choices.length !== 4 || payload.answer < 0 || payload.answer > 3 || !payload.question || !payload.explanation) {
@@ -490,74 +534,232 @@ function shuffle(array) {
   return result;
 }
 
-function generateProceduralQuestions(category) {
+function generateProceduralQuestions(category, difficulty) {
   const generated = [];
   const integer = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+  const addQuestion = (question, choices, answer, principle, method, terms) => {
+    generated.push({
+      category,
+      difficulty,
+      question,
+      choices,
+      answer,
+      explanation: `หลักการ: ${principle}\nวิธีคิด: ${method}\nศัพท์สำคัญ: ${terms}`
+    });
+  };
 
-  if (category === "ธรณีวิทยา") {
+  if (category === "ธรณีวิทยา" && difficulty === "ง่าย") {
     const halfLife = [5, 10, 20, 50][integer(0, 3)];
-    const elapsed = halfLife * [1, 2, 3][integer(0, 2)];
-    const periods = elapsed / halfLife;
+    const periods = integer(1, 3);
+    const elapsed = halfLife * periods;
     const remaining = 100 / (2 ** periods);
-    generated.push({
-      question: `ไอโซโทปมีครึ่งชีวิต ${halfLife} ล้านปี ผ่านไป ${elapsed} ล้านปี จะเหลือกัมมันตภาพประมาณเท่าใด`,
-      choices: [`${remaining}%`, `${remaining * 2}%`, `${remaining / 2}%`, "75%"],
-      answer: 0,
-      explanation: `ผ่านไป ${periods} ครึ่งชีวิต ดังนั้นเหลือ 100 × (1/2)^${periods} = ${remaining}%`
-    });
-
-    const epicenter = integer(30, 200);
-    generated.push({
-      question: `ขณะวัดคลื่นไหวสะเทือน แหล่งกำเนิดห่าง ${epicenter} km โดยคลื่น P ใช้เวลาก้าวผ่านลึกมากกว่าการ์ด ปรากฏการณ์ใดเป็น S-wave`,
-      choices: ["เคลื่อนเฉือนและไม่ผ่านของเหลว", "เคลื่อนอัดขยายผ่านแก่นนอก", "เคลื่อนเฉพาะผิวโลก", "เคลื่อนผ่านแก๊สเท่านั้น"],
-      answer: 0,
-      explanation: "S-wave เป็นคลื่นเฉือน ไม่ผ่านของเหลวและเคลื่อนช้ากว่า P-wave"
-    });
-  } else if (category === "อุตุนิยมวิทยา") {
-    const surface = integer(24, 32);
+    const remainingChoices = periods === 1
+      ? [remaining, 100, 25, 75]
+      : periods === 2
+        ? [remaining, 50, 12.5, 75]
+        : [remaining, 25, 6.25, 50];
+    addQuestion(
+      `ไอโซโทปกัมมันตรังสีมีครึ่งชีวิต ${halfLife} ล้านปี เมื่อผ่านไป ${elapsed} ล้านปี จะเหลือไอโซโทปร้อยละเท่าใด`,
+      remainingChoices.map((choice) => `${choice}%`),
+      0,
+      "ทุกหนึ่งครึ่งชีวิต จำนวนไอโซโทปแม่จะลดลงเหลือครึ่งหนึ่งของจำนวนก่อนหน้า",
+      `เวลาที่ผ่านไปเท่ากับ ${periods} ครึ่งชีวิต จึงคำนวณสัดส่วนคงเหลือด้วย (1/2)^${periods} = ${remaining}%`,
+      "การหาอายุด้วยไอโซโทปรังสี (Radiometric Dating), ครึ่งชีวิต (Half-life)"
+    );
+    const mineral = ["ควอตซ์", "ยิปซัม", "แคลไซต์"][integer(0, 2)];
+    const hardness = { "ควอตซ์": 7, "ยิปซัม": 2, "แคลไซต์": 3 }[mineral];
+    addQuestion(
+      `แร่${mineral}มีความแข็ง ${hardness} ตามมาตราโมส์ แร่ชนิดใดมีโอกาสขูดแร่ดังกล่าวเป็นรอย`,
+      ["แร่ที่มีความแข็งต่ำกว่าเท่านั้น", "แร่ที่มีความแข็งสูงกว่า", "แร่ทุกชนิดที่มีสีเข้มกว่า", "แร่ที่มีความถ่วงจำเพาะต่ำกว่า"],
+      1,
+      "มาตราโมส์จัดลำดับความแข็งจากความสามารถในการขูดกัน โดยแร่ที่แข็งกว่าจะทำให้แร่ที่อ่อนกว่าเป็นรอย",
+      `แร่${mineral}มีค่าความแข็ง ${hardness} ดังนั้นแร่ที่มีค่ามากกว่า ${hardness} จึงขูดให้เป็นรอยได้ สีและความถ่วงจำเพาะไม่ใช่เกณฑ์นี้`,
+      "ความแข็งของแร่ (Mineral Hardness), มาตราโมส์ (Mohs Scale)"
+    );
+  } else if (category === "ธรณีวิทยา" && difficulty === "ปานกลาง") {
+    const speed = integer(2, 6);
+    const years = integer(2, 5);
+    const distance = speed * years * 10;
+    addQuestion(
+      `แผ่นธรณีภาคเคลื่อนที่ ${speed} cm/ปี เป็นเวลา ${years} ล้านปี จะเคลื่อนที่รวมประมาณกี่กิโลเมตร`,
+      [`${distance} km`, `${distance * 10} km`, `${distance / 10} km`, `${speed + years} km`],
+      0,
+      "การเคลื่อนที่ของแผ่นธรณีภาคคำนวณจากอัตราเร็วคูณเวลา และต้องแปลงหน่วยเซนติเมตรกับปีให้สอดคล้อง",
+      `${speed} cm/ปี × ${years} ล้านปี = ${speed * years} ล้าน cm; เนื่องจาก 1 km = 100,000 cm จึงเท่ากับ ${distance} km`,
+      "การแปรสัณฐานแผ่นธรณีภาค (Plate Tectonics), อัตราการแผ่ขยายพื้นมหาสมุทร (Spreading Rate)"
+    );
+    addQuestion(
+      "ชั้นหินสองข้างของระนาบรอยเลื่อนเลื่อนสวนทางกันในแนวราบเป็นหลัก จัดเป็นโครงสร้างใด",
+      ["รอยเลื่อนปกติ (Normal Fault)", "รอยเลื่อนย้อน (Reverse Fault)", "รอยเลื่อนตามแนวระดับ (Strike-slip Fault)", "รอยคดโค้ง (Fold)"],
+      2,
+      "ชนิดรอยเลื่อนจำแนกจากทิศการเคลื่อนที่สัมพัทธ์ของมวลหิน โดยการเลื่อนในแนวระดับเกิดจากแรงเฉือน",
+      "เมื่อการกระจัดหลักขนานกับแนวระนาบพื้นผิวและไม่ใช่การยกหรือทรุดเด่นชัด จัดเป็นรอยเลื่อนตามแนวระดับ",
+      "การเลื่อนแบบเฉือนตามแนวระดับ (Strike-slip Fault), แรงเฉือน (Shear Stress)"
+    );
+  } else if (category === "ธรณีวิทยา" && difficulty === "ยาก") {
+    const vp = 8;
+    const vs = 4;
+    const difference = integer(6, 12);
+    const distance = difference / (1 / vs - 1 / vp);
+    addQuestion(
+      `สถานีตรวจวัดพบเวลามาถึงของคลื่น S ช้ากว่าคลื่น P ${difference} s หากสมมติ Vp = ${vp} km/s และ Vs = ${vs} km/s ระยะถึงแหล่งกำเนิดประมาณเท่าใด`,
+      [`${distance} km`, `${(difference * 4).toFixed(0)} km`, `${(difference * 12).toFixed(0)} km`, `${(difference * 2).toFixed(0)} km`],
+      0,
+      "คลื่น P เดินทางเร็วกว่า S จึงเกิดช่วงเวลามาถึงต่างกัน (S–P time) ซึ่งใช้ประมาณระยะจากสถานีถึงแหล่งกำเนิดได้",
+      `ให้ระยะเป็น d: Δt = d(1/Vs − 1/Vp) ดังนั้น d = ${difference}/(1/${vs} − 1/${vp}) = ${distance} km โดยสมมติความเร็วคงที่`,
+      "เวลา S–P (S–P Time), คลื่นปฐมภูมิ (P-wave), คลื่นทุติยภูมิ (S-wave), การระบุตำแหน่งแผ่นดินไหว (Earthquake Location)"
+    );
+    const inclination = 45;
+    const paleolatitude = Math.atan(Math.tan(inclination * Math.PI / 180) / 2) * 180 / Math.PI;
+    addQuestion(
+      `หินภูเขาไฟโบราณบันทึกมุมเอียงสนามแม่เหล็ก ${inclination}° ใกล้เส้นศูนย์สูตร โดย tan(I) = 2 tan(λ) ละติจูดแม่เหล็กโบราณ λ มีค่าประมาณเท่าใด`,
+      [`${paleolatitude.toFixed(0)}°`, "45°", "90°", "0°"],
+      0,
+      "ทิศเอียงของสนามแม่เหล็กที่ถูกบันทึกในหินสัมพันธ์กับละติจูดที่หินก่อตัว ภายใต้แบบจำลองสนามไดโพลแกนกลาง",
+      `จัดรูปเป็น tan(λ) = tan(I)/2 แล้วแทน I = ${inclination}° จะได้ λ ≈ ${paleolatitude.toFixed(0)}°; ค่านี้ใช้อนุมานตำแหน่งละติจูดเดิม`,
+      "แม่เหล็กบรรพกาล (Paleomagnetism), ละติจูดแม่เหล็กโบราณ (Paleolatitude), สนามไดโพลแกนกลาง (Geocentric Axial Dipole)"
+    );
+  } else if (category === "อุตุนิยมวิทยา" && difficulty === "ง่าย") {
+    const albedo = [0.2, 0.3, 0.4][integer(0, 2)];
+    const incoming = 100;
+    const absorbed = incoming * (1 - albedo);
+    addQuestion(
+      `พื้นผิวรับรังสีดวงอาทิตย์ ${incoming} หน่วย และมีอัลบีโด ${albedo} จะดูดกลืนพลังงานได้กี่หน่วย`,
+      [`${absorbed} หน่วย`, `${incoming * albedo} หน่วย`, `${incoming + incoming * albedo} หน่วย`, `${incoming / albedo} หน่วย`],
+      0,
+      "อัลบีโดคือสัดส่วนรังสีที่สะท้อนกลับ พลังงานที่ดูดกลืนจึงเป็นพลังงานขาเข้าคูณส่วนที่ไม่สะท้อน",
+      `พลังงานดูดกลืน = ${incoming} × (1 − ${albedo}) = ${absorbed} หน่วย`,
+      "อัลบีโด (Albedo), สมดุลพลังงานโลก (Earth Energy Balance), รังสีคลื่นสั้น (Shortwave Radiation)"
+    );
     const height = integer(1, 3);
-    const dryTemp = surface - (9.8 * height);
-    generated.push({
-      question: `ถ้าอากาศแห้งบนพื้นอุณหภูมิ ${surface}°C ยกตัวขึ้น ${height} km อุณหภูมิประมาณเท่าใด`,
-      choices: [`${dryTemp.toFixed(1)}°C`, `${(surface - 6.5 * height).toFixed(1)}°C`, `${(surface + height).toFixed(1)}°C`, "0°C"],
-      answer: 0,
-      explanation: `Dry adiabatic lapse rate ประมาณ 9.8°C/km จึงเป็น ${surface} − (9.8 × ${height}) = ${dryTemp.toFixed(1)}°C`
-    });
-
-    const temp = integer(28, 40);
-    const dewPoint = temp - integer(4, 12);
-    const lifting = integer(500, 2000);
-    generated.push({
-      question: `อากาศอุณหภูมิ ${temp}°C จุดน้ำค้าง ${dewPoint}°C ถูกยกตัวขึ้น ${lifting} m ควรยกขึ้นจนถึงระดับเมฆใกล้เท่าใด`,
-      choices: ["100 m", `${lifting} m`, `${Math.round((temp - dewPoint) * 125)} m`, "10 km"],
-      answer: 2,
-      explanation: `ประมาณจุดน้ำค้างยกตัว 125 m ต่อการลดลง 1°C จึงอยู่ประมาณ ${(temp - dewPoint) * 125} m`
-    });
+    const temperature = 30 - 6.5 * height;
+    addQuestion(
+      `ใช้ค่าอัตราการลดอุณหภูมิบรรยากาศเฉลี่ย 6.5°C/km หากอุณหภูมิพื้นผิว 30°C ที่ระดับสูง ${height} km จะประมาณกี่องศาเซลเซียส`,
+      [`${temperature.toFixed(1)}°C`, `${(30 + 6.5 * height).toFixed(1)}°C`, "30°C", "6.5°C"],
+      0,
+      "อุณหภูมิโดยทั่วไปลดลงเมื่อระดับสูงขึ้นในโทรโพสเฟียร์ โดยค่าเฉลี่ยสิ่งแวดล้อมใช้ประมาณ 6.5°C ต่อกิโลเมตร",
+      `T ≈ 30 − (6.5 × ${height}) = ${temperature.toFixed(1)}°C; เป็นค่าประมาณเฉลี่ย ไม่ใช่อัตราอะเดียแบติกของก้อนอากาศ`,
+      "อัตราการลดอุณหภูมิตามความสูงของบรรยากาศ (Environmental Lapse Rate), โทรโพสเฟียร์ (Troposphere)"
+    );
+  } else if (category === "อุตุนิยมวิทยา" && difficulty === "ปานกลาง") {
+    const surface = integer(26, 34);
+    const rise = integer(1, 3);
+    const parcelTemp = surface - 9.8 * rise;
+    const environmentTemp = surface - 6.5 * rise;
+    addQuestion(
+      `อากาศไม่อิ่มตัวยกจากพื้น ${surface}°C ขึ้น ${rise} km; ใช้ DALR = 9.8°C/km และ ELR = 6.5°C/km สภาพเสถียรภาพเป็นอย่างไร`,
+      ["ไม่เสถียร เพราะก้อนอากาศอุ่นกว่า", "เสถียร เพราะก้อนอากาศเย็นกว่าอากาศแวดล้อม", "เป็นกลาง เพราะอุณหภูมิเท่ากัน", "สรุปไม่ได้แม้ทราบอัตราลดอุณหภูมิ"],
+      1,
+      "ประเมินเสถียรภาพโดยเปรียบเทียบอุณหภูมิก้อนอากาศที่ยกตัวกับสิ่งแวดล้อม ณ ระดับเดียวกัน",
+      `ก้อนอากาศมี T = ${parcelTemp.toFixed(1)}°C ส่วนสิ่งแวดล้อมมี T = ${environmentTemp.toFixed(1)}°C; ก้อนอากาศเย็นกว่าและมีความหนาแน่นมากกว่า จึงมีแนวโน้มจมกลับ`,
+      "เสถียรภาพบรรยากาศ (Atmospheric Stability), อัตราอะเดียแบติกแห้ง (Dry Adiabatic Lapse Rate), อัตราการลดอุณหภูมิสิ่งแวดล้อม (Environmental Lapse Rate)"
+    );
+    const dewPointDepression = integer(4, 12);
+    const lcl = 125 * dewPointDepression;
+    addQuestion(
+      `อุณหภูมิอากาศกับจุดน้ำค้างต่างกัน ${dewPointDepression}°C ประมาณระดับยกตัวควบแน่น (LCL) อยู่สูงจากจุดเริ่มกี่เมตร`,
+      [`${lcl} m`, `${lcl + 375} m`, `${lcl - 250} m`, `${lcl * 2} m`],
+      0,
+      "ก้อนอากาศที่ยกตัวแบบไม่อิ่มตัวจะเย็นลงและเข้าใกล้จุดอิ่มตัว จนเริ่มเกิดการควบแน่นที่ LCL",
+      `ใช้ค่าประมาณ 125 m ต่อความต่างอุณหภูมิ 1°C: LCL ≈ 125 × ${dewPointDepression} = ${lcl} m`,
+      "ระดับยกตัวควบแน่น (Lifting Condensation Level), จุดน้ำค้าง (Dew Point), การยกตัวแบบอะเดียแบติก (Adiabatic Ascent)"
+    );
+  } else if (category === "อุตุนิยมวิทยา" && difficulty === "ยาก") {
+    const latitude = [30, 45, 60][integer(0, 2)];
+    const omega = 7.292e-5;
+    const coriolis = 2 * omega * Math.sin(latitude * Math.PI / 180);
+    const density = 1.2;
+    const pressureGradient = 0.01;
+    const wind = pressureGradient / (density * coriolis);
+    addQuestion(
+      `ที่ละติจูด ${latitude}° ใช้ ρ = ${density} kg/m³ และความชันความกดอากาศ 0.01 Pa/m คำนวณความเร็วลมจีโอสโทรฟิกโดยประมาณ`,
+      [`${wind.toFixed(1)} m/s`, `${(wind * 2).toFixed(1)} m/s`, `${(wind / 10).toFixed(1)} m/s`, "0 m/s"],
+      0,
+      "เมื่อลมระดับบนอยู่ในสมดุล แรงความกดอากาศเกรเดียนต์ถูกหักล้างด้วยแรงคอริออลิส และลมพัดเกือบขนานเส้นไอโซบาร์",
+      `คำนวณ f = 2Ωsinφ = ${coriolis.toExponential(2)} s⁻¹ แล้วใช้ Vg = |∇p|/(ρf) = 0.01/(${density} × ${coriolis.toExponential(2)}) ≈ ${wind.toFixed(1)} m/s`,
+      "ลมจีโอสโทรฟิก (Geostrophic Wind), พารามิเตอร์คอริออลิส (Coriolis Parameter), แรงเกรเดียนต์ความกดอากาศ (Pressure-Gradient Force)"
+    );
+    const deltaPressure = integer(4, 8);
+    const spacing = integer(200, 400);
+    const gradient = (deltaPressure * 100) / (spacing * 1000);
+    addQuestion(
+      `แผนที่อากาศมีความกดต่างกัน ${deltaPressure} hPa ในระยะ ${spacing} km จงหาขนาดความชันความกดอากาศเฉลี่ย`,
+      [`${gradient.toFixed(4)} Pa/m`, `${(gradient * 1000).toFixed(2)} Pa/m`, `${deltaPressure * spacing} Pa/m`, "0 Pa/m"],
+      0,
+      "ความชันความกดอากาศคือการเปลี่ยนความกดต่อระยะทาง โดยทิศชี้จากความกดต่ำไปสูง",
+      `แปลง ${deltaPressure} hPa = ${deltaPressure * 100} Pa และ ${spacing} km = ${spacing * 1000} m; ดังนั้น |∇p| = Δp/Δx = ${gradient.toFixed(4)} Pa/m`,
+      "อุตุนิยมวิทยาซินอปติก (Synoptic Meteorology), ความชันความกดอากาศ (Pressure Gradient), แผนที่ไอโซบาร์ (Isobaric Map)"
+    );
+  } else if (category === "ดาราศาสตร์" && difficulty === "ง่าย") {
+    const parallax = [0.2, 0.5, 1, 2][integer(0, 3)];
+    const distance = 1 / parallax;
+    addQuestion(
+      `ดาวมีพารัลแลกซ์ ${parallax} พิลิปดา ระยะทางประมาณกี่พาร์เซก`,
+      [`${distance} pc`, `${parallax} pc`, `${(distance * 3.26).toFixed(2)} pc`, "10 pc"],
+      0,
+      "การเลื่อนตำแหน่งปรากฏของดาวใกล้เมื่อโลกเปลี่ยนตำแหน่งใช้วัดพารัลแลกซ์ และระยะทางแปรผกผันกับมุมดังกล่าว",
+      `ใช้ d(pc) = 1/p(arcsec) ดังนั้น d = 1/${parallax} = ${distance} pc`,
+      "พารัลแลกซ์ดาวฤกษ์ (Stellar Parallax), พาร์เซก (Parsec), การเคลื่อนที่ปรากฏ (Apparent Motion)"
+    );
+    const moonPhase = integer(1, 4);
+    const phaseNames = ["จันทร์เสี้ยวข้างขึ้น", "จันทร์ครึ่งดวงข้างขึ้น", "จันทร์เกือบเต็มดวง", "จันทร์เต็มดวง"];
+    addQuestion(
+      `เมื่อดวงจันทร์อยู่ห่างจากดวงอาทิตย์บนทรงกลมท้องฟ้าประมาณ ${[45, 90, 135, 180][moonPhase - 1]}° จะเห็นเฟสใดโดยประมาณ`,
+      [phaseNames[(moonPhase + 1) % 4], phaseNames[moonPhase - 1], "จันทร์ดับเสมอ", "ขึ้นพร้อมดวงอาทิตย์เสมอ"],
+      1,
+      "เฟสดวงจันทร์เกิดจากสัดส่วนด้านสว่างที่หันเข้าหาผู้สังเกตเปลี่ยนไปตามตำแหน่งสัมพันธ์ของดวงอาทิตย์ โลก และดวงจันทร์",
+      "มุมห่าง (elongation) ประมาณ 45°, 90°, 135° และ 180° สอดคล้องโดยประมาณกับเสี้ยวข้างขึ้น ครึ่งดวงข้างขึ้น เกือบเต็มดวง และเต็มดวงตามลำดับ",
+      "เฟสดวงจันทร์ (Lunar Phase), มุมห่าง (Elongation), ทรงกลมท้องฟ้า (Celestial Sphere)"
+    );
+  } else if (category === "ดาราศาสตร์" && difficulty === "ปานกลาง") {
+    const semiMajor = integer(2, 8);
+    const period = Math.sqrt(semiMajor ** 3);
+    addQuestion(
+      `วัตถุโคจรรอบดาวฤกษ์มวลหนึ่งหน่วยมีแกนกึ่งเอก ${semiMajor} AU คาบโคจรประมาณกี่ปี`,
+      [`${period.toFixed(1)} ปี`, `${semiMajor ** 2} ปี`, `${semiMajor} ปี`, `${(semiMajor / 2).toFixed(1)} ปี`],
+      0,
+      "กฎเคปเลอร์ข้อสามสำหรับระบบที่มวลศูนย์กลางเท่าดวงอาทิตย์เชื่อมคาบโคจรกับแกนกึ่งเอก",
+      `ใช้ P² = a³ เมื่อ a = ${semiMajor} AU จะได้ P = √(${semiMajor}³) = ${period.toFixed(1)} ปี`,
+      "กฎเคปเลอร์ข้อสาม (Kepler's Third Law), คาบโคจร (Orbital Period), แกนกึ่งเอก (Semi-major Axis)"
+    );
+    const distance = integer(20, 200);
+    const modulus = 5 * Math.log10(distance / 10);
+    addQuestion(
+      `ดาวอยู่ห่าง ${distance} pc และมีโชติมาตรสัมบูรณ์ M = 2 โชติมาตรปรากฏ m มีค่าประมาณเท่าใด`,
+      [`${(2 + modulus).toFixed(1)}`, `${(2 - modulus).toFixed(1)}`, `${(distance / 10).toFixed(1)}`, `${(2 + distance).toFixed(1)}`],
+      0,
+      "โชติมาตรปรากฏขึ้นกับทั้งกำลังส่องสว่างแท้จริงและระยะทาง โดยระยะทางมากขึ้นทำให้วัตถุดูจางลง",
+      `Distance Modulus ให้ m − M = 5log10(d/10); แทน d = ${distance} pc ได้ m = 2 + ${modulus.toFixed(2)} ≈ ${(2 + modulus).toFixed(1)}`,
+      "โชติมาตรสัมบูรณ์ (Absolute Magnitude), โชติมาตรปรากฏ (Apparent Magnitude), มอดูลัสระยะทาง (Distance Modulus)"
+    );
   } else {
-    const apparent = integer(-1, 8);
-    const absolute = integer(-5, 3);
-    const distance = 10 * (10 ** ((apparent - absolute) / 5));
-    generated.push({
-      question: `ดาวดวงหนึ่งมีโชติมาตรปรากฏ m = ${apparent} และสัมบูรณ์ M = ${absolute} ระยะห่างประมาณเท่าใด`,
-      choices: [`${distance.toFixed(1)} pc`, `${(distance / 3.26).toFixed(1)} ly`, "10 pc", "1 pc"],
-      answer: 0,
-      explanation: `m − M = ${apparent - absolute}; d = 10 × 10^((m−M)/5) ≈ ${distance.toFixed(1)} pc`
-    });
-
-    const period = integer(2, 12);
-    const semiMajor = period ** (2 / 3);
-    generated.push({
-      question: `วัตถุโคจรมีคาบโคจร ${period} ปี แกนกึ่งสำคัญจากกฎเคปเลอร์ข้อสามประมาณเท่าใด`,
-      choices: [`${semiMajor.toFixed(2)} AU`, `${period} AU`, "1 AU", `${period ** 2} AU`],
-      answer: 0,
-      explanation: `P² = a³ จึง a = P^(2/3) = ${semiMajor.toFixed(2)} AU`
-    });
+    const temperature = integer(4000, 9000);
+    const wavelength = 2.898e-3 / temperature;
+    addQuestion(
+      `ดาวฤกษ์มีอุณหภูมิผิว ${temperature} K ตามกฎของวีน จุดสูงสุดของการแผ่รังสีอยู่ที่ความยาวคลื่นประมาณเท่าใด`,
+      [`${(wavelength * 1e9).toFixed(0)} nm`, `${(wavelength * 1e6).toFixed(2)} μm`, `${temperature} nm`, "2.898 nm"],
+      0,
+      "สเปกตรัมวัตถุดำของดาวมีความยาวคลื่นที่แผ่พลังงานสูงสุดแปรผกผันกับอุณหภูมิผิว",
+      `ใช้ λmax T = 2.898 × 10⁻³ m·K; λmax = 2.898 × 10⁻³/${temperature} = ${(wavelength * 1e9).toFixed(0)} nm`,
+      "กฎการกระจัดของวีน (Wien's Displacement Law), วัตถุดำ (Blackbody), ความยาวคลื่นสูงสุด (Peak Wavelength)"
+    );
+    const radiusRatio = integer(2, 5);
+    const temperatureRatio = 2;
+    const luminosityRatio = radiusRatio ** 2 * temperatureRatio ** 4;
+    addQuestion(
+      `ดาว A มีรัศมีเป็น ${radiusRatio} เท่าและอุณหภูมิผิวเป็น ${temperatureRatio} เท่าของดาว B อัตราส่วนความส่องสว่าง LA/LB เป็นเท่าใด`,
+      [`${luminosityRatio}`, `${radiusRatio * temperatureRatio}`, `${radiusRatio ** 2}`, `${temperatureRatio ** 2}`],
+      0,
+      "กำลังส่องสว่างของดาวทรงกลมสัมพันธ์กับพื้นที่ผิวและกำลังสี่ของอุณหภูมิสัมบูรณ์",
+      `จาก L = 4πR²σT⁴ ได้ LA/LB = (${radiusRatio})²(${temperatureRatio})⁴ = ${luminosityRatio}`,
+      "กฎสเตฟาน–โบลต์ซมันน์ (Stefan–Boltzmann Law), ความส่องสว่าง (Luminosity), อุณหภูมิยังผล (Effective Temperature)"
+    );
   }
 
   return generated;
 }
 
-function generateQuizSet() {
+async function generateQuizSet() {
   resetQuiz();
   if (leaderboardUnsubscribe) leaderboardUnsubscribe();
   app.innerHTML = `
@@ -570,6 +772,11 @@ function generateQuizSet() {
         <div class="quiz-category-select" aria-label="หมวดหมู่ควิซ">
           ${quizCategories.map((category) => `
             <button class="${category === activeQuizCategory ? "active" : ""}" type="button" data-quiz-category="${escapeHtml(category)}">${category}</button>
+          `).join("")}
+        </div>
+        <div class="quiz-difficulty-select" aria-label="เลือกระดับความยาก">
+          ${quizDifficulties.map((difficulty) => `
+            <button class="${difficulty === activeQuizDifficulty ? "active" : ""}" type="button" data-quiz-difficulty="${difficulty}">${difficulty}</button>
           `).join("")}
         </div>
         <div class="count-select" aria-label="จำนวนข้อ">
@@ -591,6 +798,12 @@ function generateQuizSet() {
       generateQuizSet();
     });
   });
+  document.querySelectorAll("[data-quiz-difficulty]").forEach((button) => {
+    button.addEventListener("click", () => {
+      activeQuizDifficulty = button.dataset.quizDifficulty;
+      generateQuizSet();
+    });
+  });
   document.querySelectorAll("[data-count]").forEach((button) => {
     button.addEventListener("click", () => {
       quizCount = button.dataset.count === "∞" ? "∞" : Number(button.dataset.count);
@@ -599,8 +812,7 @@ function generateQuizSet() {
   });
   document.getElementById("generateNewQuiz").addEventListener("click", generateQuizSet);
   subscribeLeaderboard();
-  buildQuizQuestions();
-  renderQuizQuestion();
+  if (await buildQuizQuestions()) renderQuizQuestion();
 }
 
 function resetQuiz() {
@@ -613,19 +825,122 @@ function resetQuiz() {
   quizResultSaved = false;
 }
 
-function buildQuizQuestions() {
-  const staticQuestions = shuffle(quizData[activeQuizCategory] || []);
-  const firestoreQuestions = shuffle(firestoreQuizQuestions.filter((item) => item.category === activeQuizCategory));
-  const proceduralQuestions = shuffle(generateProceduralQuestions(activeQuizCategory));
-  const pool = shuffle([...staticQuestions, ...firestoreQuestions, ...proceduralQuestions]);
-  const target = quizCount === "∞" ? 20 : quizCount;
-  quizQuestions = [];
+function setQuizControlsDisabled(disabled) {
+  document.querySelectorAll(".quiz-controls button").forEach((button) => {
+    button.disabled = disabled;
+  });
+}
 
-  while (quizQuestions.length < target) {
-    quizQuestions.push(pool[quizQuestions.length % pool.length]);
+function showQuizLoading() {
+  const quizArea = document.getElementById("quizArea");
+  if (!quizArea) return;
+  quizArea.innerHTML = `
+    <div class="quiz-card quiz-loading" role="status" aria-live="polite">
+      <span class="quiz-loading-cloud" aria-hidden="true">☁️</span>
+      <p>กำลังสร้างชุดข้อสอบ สอวน. สดใหม่ด้วย AI...</p>
+    </div>
+  `;
+}
+
+function buildLocalQuizQuestions(target) {
+  const staticQuestions = shuffle(quizData[activeQuizCategory] || []);
+  const firestoreQuestions = shuffle(firestoreQuizQuestions.filter((item) =>
+    item.category === activeQuizCategory && (item.difficulty || "ง่าย") === activeQuizDifficulty
+  ));
+  const proceduralQuestions = shuffle(generateProceduralQuestions(activeQuizCategory, activeQuizDifficulty));
+  const matchingStaticQuestions = staticQuestions.filter((item) =>
+    (item.difficulty || "ง่าย") === activeQuizDifficulty
+  );
+  const pool = shuffle([...matchingStaticQuestions, ...firestoreQuestions, ...proceduralQuestions]);
+  if (!pool.length) throw new Error("No local quiz questions available");
+
+  const questions = [];
+  while (questions.length < target) {
+    questions.push(pool[questions.length % pool.length]);
   }
-  quizQuestions = quizQuestions.map((item) => ({ ...item }));
+  return questions;
+}
+
+function isValidGeneratedQuiz(questions, target) {
+  return Array.isArray(questions) &&
+    questions.length === target &&
+    questions.every((question) =>
+      question &&
+      typeof question.question === "string" &&
+      question.question.trim() &&
+      Array.isArray(question.choices) &&
+      question.choices.length === 4 &&
+      question.choices.every((choice) => typeof choice === "string" && choice.trim()) &&
+      Number.isInteger(question.answer) &&
+      question.answer >= 0 &&
+      question.answer <= 3 &&
+      typeof question.explanation === "string" &&
+      question.explanation.startsWith("หลักการ:") &&
+      question.explanation.includes("\nวิธีคิด:") &&
+      question.explanation.includes("\nศัพท์สำคัญ:")
+    );
+}
+
+async function buildQuizQuestions() {
+  const generation = ++quizBuildGeneration;
+  if (quizBuildController) quizBuildController.abort();
+  const controller = new AbortController();
+  quizBuildController = controller;
+  const target = quizCount === "∞" ? 20 : quizCount;
+  let timeoutId;
+  let questions;
+
+  setQuizControlsDisabled(true);
+  showQuizLoading();
+  try {
+    timeoutId = setTimeout(() => controller.abort(), 18000);
+    const response = await fetch("/api/generate-quiz", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        category: activeQuizCategory,
+        difficulty: activeQuizDifficulty,
+        count: target
+      }),
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`Quiz API returned ${response.status}`);
+    const generatedQuestions = await response.json();
+    if (!isValidGeneratedQuiz(generatedQuestions, target)) {
+      throw new Error("Quiz API returned an invalid question set");
+    }
+    questions = generatedQuestions;
+  } catch (error) {
+    if (generation !== quizBuildGeneration) return false;
+    console.error("AI quiz generation failed; using local questions", error);
+    try {
+      questions = buildLocalQuizQuestions(target);
+      showToast("สร้างข้อสอบ AI ไม่สำเร็จ ใช้คลังข้อสอบสำรองแทน");
+    } catch (fallbackError) {
+      console.error("Local quiz fallback failed", fallbackError);
+      const quizArea = document.getElementById("quizArea");
+      if (quizArea) {
+        quizArea.innerHTML = `
+          <div class="quiz-card quiz-build-error" role="alert">
+            สร้างชุดข้อสอบไม่สำเร็จ กรุณากดสุ่มสร้างชุดใหม่อีกครั้ง
+          </div>
+        `;
+      }
+      showToast("สร้างชุดข้อสอบไม่สำเร็จ");
+      return false;
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    if (generation === quizBuildGeneration) {
+      setQuizControlsDisabled(false);
+      quizBuildController = null;
+    }
+  }
+
+  if (generation !== quizBuildGeneration) return false;
+  quizQuestions = questions.map((question) => ({ ...question }));
   quizTotalQuestions += quizQuestions.length;
+  return true;
 }
 
 function subscribeLeaderboard() {
@@ -682,14 +997,13 @@ function renderQuizQuestion() {
       </div>
     `;
     if (currentUser) saveQuizResult();
-    document.getElementById("continueQuiz")?.addEventListener("click", () => {
+    document.getElementById("continueQuiz")?.addEventListener("click", async () => {
       quizIndex = 0;
       quizSetScore = 0;
       quizAnswered = false;
       quizFinished = false;
       quizResultSaved = false;
-      buildQuizQuestions();
-      renderQuizQuestion();
+      if (await buildQuizQuestions()) renderQuizQuestion();
     });
     document.getElementById("retryQuiz").addEventListener("click", generateQuizSet);
     document.getElementById("loginForLeaderboard")?.addEventListener("click", handleLogin);
@@ -746,10 +1060,12 @@ function answerQuestion(selectedIndex) {
   }
   document.body.classList.add(correct ? "answer-success" : "answer-error");
   setTimeout(() => document.body.classList.remove("answer-success", "answer-error"), 520);
+  const parts = explanationParts(question);
   document.getElementById("explanationArea").innerHTML = `
     <div class="explanation ${correct ? "correct" : "wrong"}">
       <strong>${correct ? "ถูกต้องจ้า! 🌟" : "ลองใหม่อีกนิดนะ 💗"}</strong>
-      <span>${escapeHtml(question.explanation)}</span>
+      <span class="explanation-body">${escapeHtml(parts.body)}</span>
+      <div class="key-terms"><strong>ศัพท์สำคัญ</strong><span>${escapeHtml(parts.terms)}</span></div>
     </div>
   `;
   document.querySelector(".quiz-progress strong").textContent = quizScore;
@@ -981,6 +1297,7 @@ getRedirectResult(auth)
 onAuthStateChanged(auth, async (user) => {
   currentUser = user;
   isAdmin = Boolean(user && user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+  recordPageView(user);
   document.getElementById("adminBadge").hidden = !isAdmin;
   document.getElementById("adminActions").hidden = !isAdmin;
   document.getElementById("announcementAdminActions").hidden = !isAdmin;
@@ -1025,6 +1342,5 @@ document.addEventListener("keydown", (event) => {
 });
 
 subscribeFirestore();
-recordPageView();
 startAuroraCanvas();
 renderLibrary();
