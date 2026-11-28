@@ -65,6 +65,9 @@ let quizCount = 5;
 let quizTotalQuestions = 0;
 let quizSetScore = 0;
 let quizResultSaved = false;
+let currentCombo = 0;
+let maxCombo = 0;
+let isMistakeReviewMode = false;
 let isAdmin = false;
 let currentUser = null;
 let playerDisplayName = "";
@@ -185,12 +188,8 @@ function renderAnnouncement(message) {
 function renderLibrary() {
   app.innerHTML = `
     <section>
-      <div class="page-heading">
-        <div>
-          <span class="eyebrow">PASTEL CONTENT CLOUD</span>
-          <h1>คลังชีทสรุป</h1>
-        </div>
-        <p>วิทยาศาสตร์โลกและอวกาศ 🌙</p>
+      <div class="page-heading library-heading">
+        <h1>คลังชีทสรุป</h1>
       </div>
       ${isAdmin ? `
         <div class="stats-summary" aria-label="สถิติเข้าเว็บและเปิดไฟล์">
@@ -760,8 +759,10 @@ function generateProceduralQuestions(category, difficulty) {
 }
 
 async function generateQuizSet() {
+  isMistakeReviewMode = false;
   resetQuiz();
   if (leaderboardUnsubscribe) leaderboardUnsubscribe();
+  const mistakes = getMistakeNotebook();
   app.innerHTML = `
     <section class="quiz-layout">
       <div class="page-heading">
@@ -784,6 +785,7 @@ async function generateQuizSet() {
             <button class="${count === quizCount ? "active" : ""}" type="button" data-count="${count === "∞" ? "∞" : count}">${count} ข้อ</button>
           `).join("")}
           <button id="generateNewQuiz" class="generate-button" type="button">✦ สุ่มสร้างชุดใหม่</button>
+          <button id="reviewMistakesBtn" class="mistake-button" type="button" ${mistakes.length === 0 ? "disabled" : ""}>🩹 ทวนข้อที่เคยตอบผิด (${mistakes.length})</button>
         </div>
       </div>
       <div id="quizArea"></div>
@@ -811,6 +813,7 @@ async function generateQuizSet() {
     });
   });
   document.getElementById("generateNewQuiz").addEventListener("click", generateQuizSet);
+  document.getElementById("reviewMistakesBtn").addEventListener("click", startMistakeReview);
   subscribeLeaderboard();
   if (await buildQuizQuestions()) renderQuizQuestion();
 }
@@ -823,12 +826,100 @@ function resetQuiz() {
   quizAnswered = false;
   quizFinished = false;
   quizResultSaved = false;
+  currentCombo = 0;
+  maxCombo = 0;
+}
+
+const mistakeNotebookKey = "momoooo_mistake_notebook";
+
+function isValidMistakeQuestion(question) {
+  return question &&
+    typeof question.question === "string" &&
+    question.question.trim() &&
+    Array.isArray(question.choices) &&
+    question.choices.length === 4 &&
+    question.choices.every((choice) => typeof choice === "string") &&
+    Number.isInteger(question.answer) &&
+    question.answer >= 0 &&
+    question.answer <= 3 &&
+    typeof question.explanation === "string";
+}
+
+function getMistakeNotebook() {
+  try {
+    const saved = localStorage.getItem(mistakeNotebookKey);
+    if (!saved) return [];
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed)) {
+      console.error("Mistake notebook data is not an array");
+      return [];
+    }
+    return parsed.filter(isValidMistakeQuestion);
+  } catch (error) {
+    console.error("Could not read mistake notebook", error);
+    return [];
+  }
+}
+
+function saveToMistakeNotebook(question) {
+  const mistakes = getMistakeNotebook();
+  if (mistakes.some((item) => item.question === question.question)) return;
+  const savedQuestion = {
+    question: question.question,
+    choices: [...question.choices],
+    answer: question.answer,
+    explanation: question.explanation,
+    category: question.category || activeQuizCategory,
+    difficulty: question.difficulty || activeQuizDifficulty
+  };
+  try {
+    localStorage.setItem(mistakeNotebookKey, JSON.stringify([...mistakes, savedQuestion]));
+  } catch (error) {
+    console.error("Could not save question to mistake notebook", error);
+    showToast("บันทึกข้อผิดพลาดไม่สำเร็จ");
+  }
+}
+
+function removeFromMistakeNotebook(questionText) {
+  const mistakes = getMistakeNotebook();
+  const remaining = mistakes.filter((question) => question.question !== questionText);
+  if (remaining.length === mistakes.length) return false;
+  try {
+    localStorage.setItem(mistakeNotebookKey, JSON.stringify(remaining));
+    return true;
+  } catch (error) {
+    console.error("Could not remove question from mistake notebook", error);
+    showToast("อัปเดตสมุดข้อผิดไม่สำเร็จ");
+    return false;
+  }
+}
+
+function updateReviewMistakesButton() {
+  const button = document.getElementById("reviewMistakesBtn");
+  if (!button) return;
+  const mistakes = getMistakeNotebook();
+  button.textContent = `🩹 ทวนข้อที่เคยตอบผิด (${mistakes.length})`;
+  button.disabled = mistakes.length === 0;
+}
+
+function startMistakeReview() {
+  const mistakes = getMistakeNotebook();
+  if (!mistakes.length) {
+    updateReviewMistakesButton();
+    return;
+  }
+  resetQuiz();
+  isMistakeReviewMode = true;
+  quizQuestions = shuffle(mistakes).map((question) => ({ ...question }));
+  quizTotalQuestions = quizQuestions.length;
+  renderQuizQuestion();
 }
 
 function setQuizControlsDisabled(disabled) {
   document.querySelectorAll(".quiz-controls button").forEach((button) => {
     button.disabled = disabled;
   });
+  if (!disabled) updateReviewMistakesButton();
 }
 
 function showQuizLoading() {
@@ -837,7 +928,7 @@ function showQuizLoading() {
   quizArea.innerHTML = `
     <div class="quiz-card quiz-loading" role="status" aria-live="polite">
       <span class="quiz-loading-cloud" aria-hidden="true">☁️</span>
-      <p>กำลังสร้างชุดข้อสอบ สอวน. สดใหม่ด้วย AI...</p>
+      <p>กำลังสร้างชุดข้อสอบสดใหม่ด้วย AI...</p>
     </div>
   `;
 }
@@ -980,33 +1071,45 @@ function renderQuizQuestion() {
   if (!quizArea) return;
 
   if (quizFinished) {
+    const reviewMode = isMistakeReviewMode;
     quizArea.innerHTML = `
       <div class="quiz-card result-card">
-        <div class="score-cloud">☁️<span>${quizScore}/${quizTotalQuestions}</span><small>คะแนนสะสม</small></div>
-        <h2>ชุดควิซจบแล้วน้า 🌸</h2>
-        <p>หมวด ${escapeHtml(activeQuizCategory)} · ชุดนี้ได้ ${quizSetScore} คะแนน · สะสม ${quizScore} จาก ${quizTotalQuestions} ข้อ</p>
-        ${currentUser
-          ? `<p class="score-save-status">กำลังบันทึกคะแนนขึ้นอันดับ...</p>`
-          : `<p class="score-save-status">ล็อกอินเพื่อบันทึกคะแนนและเก็บอันดับของคุณ</p>`}
+        <div class="score-cloud">☁️<span>${quizScore}/${quizTotalQuestions}</span><small>${reviewMode ? "คะแนนทบทวน" : "คะแนนสะสม"}</small></div>
+        <h2>${reviewMode ? "ทบทวนข้อที่เคยตอบผิดครบแล้ว 🌸" : "ชุดควิซจบแล้วน้า 🌸"}</h2>
+        <p>${reviewMode
+          ? `ทบทวนถูก ${quizSetScore} จาก ${quizTotalQuestions} ข้อ`
+          : `หมวด ${escapeHtml(activeQuizCategory)} · ชุดนี้ได้ ${quizSetScore} คะแนน · สะสม ${quizScore} จาก ${quizTotalQuestions} ข้อ`}</p>
+        <p class="combo-stat">🔥 คอมโบสูงสุด (Max Combo): ${maxCombo} ครั้ง</p>
+        ${reviewMode
+          ? ""
+          : currentUser
+            ? `<p class="score-save-status">กำลังบันทึกคะแนนขึ้นอันดับ...</p>`
+            : `<p class="score-save-status">ล็อกอินเพื่อบันทึกคะแนนและเก็บอันดับของคุณ</p>`}
         <div class="result-actions">
-          ${quizCount === "∞" ? `<button id="continueQuiz" class="primary-button" type="button">ลุยต่ออีก 20 ข้อ (สะสมคะแนนต่อ) ∞</button>` : ""}
-          <button id="retryQuiz" class="primary-button" type="button">สุ่มชุดใหม่อีกที</button>
-          ${currentUser ? "" : `<button id="loginForLeaderboard" class="secondary-button" type="button">ล็อกอินเพื่อเก็บอันดับ</button>`}
+          ${reviewMode
+            ? `<button id="backToNormalQuiz" class="primary-button" type="button">กลับไปทำควิซปกติ</button>`
+            : `${quizCount === "∞" ? `<button id="continueQuiz" class="primary-button" type="button">ลุยต่ออีก 20 ข้อ (สะสมคะแนนต่อ) ∞</button>` : ""}
+              <button id="retryQuiz" class="primary-button" type="button">สุ่มชุดใหม่อีกที</button>
+              ${currentUser ? "" : `<button id="loginForLeaderboard" class="secondary-button" type="button">ล็อกอินเพื่อเก็บอันดับ</button>`}`}
           <button id="backLibrary" class="secondary-button" type="button">ไปคลังชีท</button>
         </div>
       </div>
     `;
-    if (currentUser) saveQuizResult();
-    document.getElementById("continueQuiz")?.addEventListener("click", async () => {
-      quizIndex = 0;
-      quizSetScore = 0;
-      quizAnswered = false;
-      quizFinished = false;
-      quizResultSaved = false;
-      if (await buildQuizQuestions()) renderQuizQuestion();
-    });
-    document.getElementById("retryQuiz").addEventListener("click", generateQuizSet);
-    document.getElementById("loginForLeaderboard")?.addEventListener("click", handleLogin);
+    if (!reviewMode && currentUser) saveQuizResult();
+    if (reviewMode) {
+      document.getElementById("backToNormalQuiz").addEventListener("click", generateQuizSet);
+    } else {
+      document.getElementById("continueQuiz")?.addEventListener("click", async () => {
+        quizIndex = 0;
+        quizSetScore = 0;
+        quizAnswered = false;
+        quizFinished = false;
+        quizResultSaved = false;
+        if (await buildQuizQuestions()) renderQuizQuestion();
+      });
+      document.getElementById("retryQuiz").addEventListener("click", generateQuizSet);
+      document.getElementById("loginForLeaderboard")?.addEventListener("click", handleLogin);
+    }
     document.getElementById("backLibrary").addEventListener("click", () => setView("library"));
     launchPastelCelebration();
     return;
@@ -1018,7 +1121,10 @@ function renderQuizQuestion() {
     <div class="quiz-card">
       <div class="quiz-progress">
         <span>ข้อ ${quizIndex + 1} จาก ${quizQuestions.length}</span>
-        <span>คะแนน <strong>${quizScore}</strong></span>
+        <span class="quiz-score-group">
+          <span>คะแนน <strong>${quizScore}</strong></span>
+          ${currentCombo >= 2 ? `<span class="combo-badge">🔥 Combo x${currentCombo}</span>` : ""}
+        </span>
       </div>
       <div class="progress-track"><div class="progress-fill" style="width:${progress}%"></div></div>
       <h2 class="question-title">${escapeHtml(question.question)}</h2>
@@ -1049,7 +1155,10 @@ function answerQuestion(selectedIndex) {
   quizAnswered = true;
   const question = quizQuestions[quizIndex];
   const correct = selectedIndex === question.answer;
-  document.querySelectorAll(".answer-button").forEach((button, index) => {
+  let mistakeRemoved = false;
+  const answerButtons = [...document.querySelectorAll(".answer-button")];
+  const selectedButton = answerButtons[selectedIndex];
+  answerButtons.forEach((button, index) => {
     button.disabled = true;
     if (index === question.answer) button.classList.add("correct");
     if (index === selectedIndex && !correct) button.classList.add("wrong");
@@ -1057,6 +1166,17 @@ function answerQuestion(selectedIndex) {
   if (correct) {
     quizScore += 1;
     quizSetScore += 1;
+    currentCombo += 1;
+    maxCombo = Math.max(maxCombo, currentCombo);
+    if (currentCombo >= 3) launchComboBurst(selectedButton);
+    if (isMistakeReviewMode) {
+      mistakeRemoved = removeFromMistakeNotebook(question.question);
+      updateReviewMistakesButton();
+    }
+  } else {
+    currentCombo = 0;
+    saveToMistakeNotebook(question);
+    updateReviewMistakesButton();
   }
   document.body.classList.add(correct ? "answer-success" : "answer-error");
   setTimeout(() => document.body.classList.remove("answer-success", "answer-error"), 520);
@@ -1064,12 +1184,43 @@ function answerQuestion(selectedIndex) {
   document.getElementById("explanationArea").innerHTML = `
     <div class="explanation ${correct ? "correct" : "wrong"}">
       <strong>${correct ? "ถูกต้องจ้า! 🌟" : "ลองใหม่อีกนิดนะ 💗"}</strong>
+      ${correct && isMistakeReviewMode
+        ? `<span class="mistake-removed-message">${mistakeRemoved ? "จำได้แล้ว! ลบออกจากสมุดข้อผิดเรียบร้อย ✨" : "ลบข้อสอบออกจากสมุดข้อผิดไม่สำเร็จ กรุณาลองอีกครั้ง"}</span>`
+        : ""}
       <span class="explanation-body">${escapeHtml(parts.body)}</span>
       <div class="key-terms"><strong>ศัพท์สำคัญ</strong><span>${escapeHtml(parts.terms)}</span></div>
     </div>
   `;
-  document.querySelector(".quiz-progress strong").textContent = quizScore;
+  const progressScore = document.querySelector(".quiz-score-group strong");
+  if (progressScore) progressScore.textContent = quizScore;
+  const comboBadge = document.querySelector(".quiz-score-group .combo-badge");
+  const scoreGroup = document.querySelector(".quiz-score-group");
+  if (currentCombo >= 2) {
+    const badge = comboBadge || document.createElement("span");
+    badge.className = "combo-badge";
+    badge.textContent = `🔥 Combo x${currentCombo}`;
+    if (!comboBadge) scoreGroup.appendChild(badge);
+  } else {
+    comboBadge?.remove();
+  }
   document.getElementById("nextQuestion").disabled = false;
+}
+
+function launchComboBurst(target) {
+  if (!target) return;
+  const bounds = target.getBoundingClientRect();
+  for (let index = 0; index < 8; index += 1) {
+    const angle = (Math.PI * 2 * index) / 8;
+    const particle = document.createElement("span");
+    particle.className = "combo-spark";
+    particle.textContent = "✦";
+    particle.style.left = `${bounds.left + bounds.width / 2}px`;
+    particle.style.top = `${bounds.top + bounds.height / 2}px`;
+    particle.style.setProperty("--combo-x", `${Math.cos(angle) * 38}px`);
+    particle.style.setProperty("--combo-y", `${Math.sin(angle) * 38}px`);
+    document.body.appendChild(particle);
+    setTimeout(() => particle.remove(), 700);
+  }
 }
 
 function nextQuestion() {
@@ -1315,7 +1466,7 @@ onAuthStateChanged(auth, async (user) => {
       } else {
         await promptPlayerDisplayName(user, user.displayName || "");
       }
-      if (quizFinished && !quizResultSaved) saveQuizResult();
+      if (quizFinished && !isMistakeReviewMode && !quizResultSaved) saveQuizResult();
     } catch (error) {
       console.error(error);
       showToast("โหลดข้อมูลผู้เล่นไม่สำเร็จ");
