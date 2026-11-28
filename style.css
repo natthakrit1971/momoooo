@@ -1231,6 +1231,6 @@ button { cursor: pointer; }
   font-weight:700;
 }
 .page-heading.library-heading {
-  justify-content:center;
+  justify-content:flex-start;
   align-items:center;
 }
