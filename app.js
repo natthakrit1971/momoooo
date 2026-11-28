@@ -1277,10 +1277,30 @@ function launchPastelCelebration() {
 function startAuroraCanvas() {
   const canvas = document.getElementById("auroraCanvas");
   const context = canvas.getContext("2d");
+  const cometColors = ["251,207,232", "186,230,253", "233,213,255"];
   let stars = [];
   let bubbles = [];
   let sparkles = [];
+  let ambientSparkles = [];
+  let shootingStars = [];
+  let frameCount = 0;
+  let nextShootingStarFrame = 200 + Math.random() * 200;
   let pointer = { x: innerWidth / 2, y: innerHeight / 2 };
+
+  function createBubble(atBottom = false) {
+    const radius = Math.random() * 16 + 8;
+    return {
+      x: Math.random() * canvas.width,
+      y: atBottom ? canvas.height + radius : Math.random() * canvas.height,
+      radius,
+      speed: Math.random() * .18 + .08,
+      tint: Math.random() < .5 ? "rgba(251,207,232,.24)" : "rgba(186,230,253,.24)",
+      vx: 0,
+      vy: 0,
+      interactionCooldown: 0,
+      popped: false
+    };
+  }
 
   function resize() {
     canvas.width = innerWidth;
@@ -1296,7 +1316,21 @@ function startAuroraCanvas() {
       x: Math.random() * canvas.width,
       y: Math.random() * canvas.height,
       radius: Math.random() * 16 + 8,
-      speed: Math.random() * .18 + .08
+      speed: Math.random() * .18 + .08,
+      tint: Math.random() < .5 ? "rgba(251,207,232,.24)" : "rgba(186,230,253,.24)",
+      vx: 0,
+      vy: 0,
+      interactionCooldown: 0,
+      popped: false
+    }));
+    ambientSparkles = Array.from({
+      length: Math.min(48, Math.max(24, Math.floor(canvas.width * canvas.height / 22000)))
+    }, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      radius: Math.random() * 1.2 + .35,
+      phase: Math.random() * Math.PI * 2,
+      speed: Math.random() * .0008 + .00025
     }));
   }
 
@@ -1304,37 +1338,185 @@ function startAuroraCanvas() {
   window.addEventListener("pointermove", (event) => {
     pointer = { x: event.clientX, y: event.clientY };
     if (sparkles.length < 24) {
-      sparkles.push({ x: event.clientX, y: event.clientY, life: 1, radius: Math.random() * 3 + 2 });
+      sparkles.push({
+        x: event.clientX,
+        y: event.clientY,
+        life: 1,
+        radius: Math.random() * 2 + 1,
+        vx: (Math.random() - .5) * .5,
+        vy: (Math.random() - .5) * .5
+      });
     }
+    bubbles.forEach((bubble) => {
+      if (bubble.popped || bubble.interactionCooldown > 0) return;
+      const dx = bubble.x - pointer.x;
+      const dy = bubble.y - pointer.y;
+      const distance = Math.hypot(dx, dy);
+      if (distance > bubble.radius + 18) return;
+      if (Math.random() < .22) {
+        bubble.popped = true;
+        for (let index = 0; index < 6 && sparkles.length < 24; index += 1) {
+          const angle = (Math.PI * 2 * index) / 6;
+          sparkles.push({
+            x: bubble.x,
+            y: bubble.y,
+            life: .9,
+            radius: Math.random() * 2 + 1,
+            vx: Math.cos(angle) * (Math.random() * 1.4 + .7),
+            vy: Math.sin(angle) * (Math.random() * 1.4 + .7)
+          });
+        }
+      } else {
+        const force = (bubble.radius + 18 - distance) * .12 + .8;
+        bubble.vx += (dx / (distance || 1)) * force;
+        bubble.vy += (dy / (distance || 1)) * force;
+        bubble.interactionCooldown = 8;
+      }
+    });
   });
 
   function draw(time) {
+    frameCount += 1;
     context.clearRect(0, 0, canvas.width, canvas.height);
 
+    if (frameCount >= nextShootingStarFrame) {
+      shootingStars.push({
+        x: Math.random() * canvas.width * .4,
+        y: Math.random() * canvas.height * .35,
+        vx: 10 + Math.random() * 4,
+        vy: 4 + Math.random() * 3,
+        life: 1,
+        color: cometColors[Math.floor(Math.random() * cometColors.length)]
+      });
+      nextShootingStarFrame = frameCount + 200 + Math.random() * 200;
+    }
+
+    bubbles = bubbles.filter((bubble) => !bubble.popped);
+    while (bubbles.length < 12) bubbles.push(createBubble(true));
+    context.save();
     bubbles.forEach((bubble) => {
-      bubble.y -= bubble.speed;
-      if (bubble.y + bubble.radius < 0) bubble.y = canvas.height + bubble.radius;
-      const shift = (pointer.x - canvas.width / 2) * .008;
+      if (bubble.interactionCooldown > 0) bubble.interactionCooldown -= 1;
+      bubble.vx *= .96;
+      bubble.vy *= .96;
+      bubble.x += bubble.vx;
+      bubble.y += bubble.vy - bubble.speed;
+      if (bubble.y + bubble.radius < 0 || bubble.x < -bubble.radius || bubble.x > canvas.width + bubble.radius) {
+        bubble.x = Math.random() * canvas.width;
+        bubble.y = canvas.height + bubble.radius;
+        bubble.vx = 0;
+        bubble.vy = 0;
+      }
       context.beginPath();
-      context.fillStyle = "rgba(216,180,254,.10)";
-      context.strokeStyle = "rgba(255,255,255,.28)";
+      context.globalAlpha = .8;
+      context.fillStyle = "rgba(255,255,255,.15)";
+      context.strokeStyle = bubble.tint;
       context.lineWidth = 1;
-      context.arc(bubble.x + shift, bubble.y, bubble.radius, 0, Math.PI * 2);
+      context.arc(bubble.x, bubble.y, bubble.radius, 0, Math.PI * 2);
       context.fill();
       context.stroke();
+      context.beginPath();
+      context.globalAlpha = .58;
+      context.strokeStyle = "rgba(255,255,255,.62)";
+      context.ellipse(
+        bubble.x - bubble.radius * .12,
+        bubble.y - bubble.radius * .12,
+        bubble.radius * .68,
+        bubble.radius * .42,
+        -.55,
+        Math.PI * 1.05,
+        Math.PI * 1.8
+      );
+      context.stroke();
     });
+    context.restore();
 
+    context.save();
+    ambientSparkles.forEach((sparkle, index) => {
+      const drift = time * sparkle.speed + sparkle.phase;
+      sparkle.x += Math.cos(drift) * .08;
+      sparkle.y += Math.sin(drift) * .08;
+      if (sparkle.x < 0) sparkle.x += canvas.width;
+      if (sparkle.x > canvas.width) sparkle.x -= canvas.width;
+      if (sparkle.y < 0) sparkle.y += canvas.height;
+      if (sparkle.y > canvas.height) sparkle.y -= canvas.height;
+      context.globalAlpha = .14 + (Math.sin(drift * 2) + 1) * .12;
+      context.fillStyle = index % 3 === 0 ? "#c084fc" : index % 3 === 1 ? "#7dd3fc" : "#f9a8d4";
+      context.beginPath();
+      context.arc(sparkle.x, sparkle.y, sparkle.radius, 0, Math.PI * 2);
+      context.fill();
+    });
+    context.restore();
+
+    context.save();
     stars.forEach((star) => {
       const pulse = .35 + Math.abs(Math.sin(time * star.speed + star.phase)) * .65;
+      context.globalAlpha = pulse;
       context.beginPath();
-      context.fillStyle = `rgba(192,132,252,${pulse * .75})`;
+      context.fillStyle = star.radius > 1.7 ? "rgba(168,85,247,.25)" : "rgba(56,189,248,.25)";
+      context.shadowBlur = 5;
+      context.shadowColor = "rgba(168,85,247,.18)";
       context.arc(star.x + (pointer.x - canvas.width / 2) * .006, star.y, star.radius, 0, Math.PI * 2);
       context.fill();
     });
+    context.restore();
+
+    context.save();
+    context.beginPath();
+    context.lineWidth = .8;
+    context.strokeStyle = "rgba(168, 85, 247, 0.08)";
+    for (let first = 0; first < stars.length; first += 1) {
+      for (let second = first + 1; second < stars.length; second += 1) {
+        const distance = Math.hypot(stars[first].x - stars[second].x, stars[first].y - stars[second].y);
+        if (distance < 105 && (first + second) % 4 === 0) {
+          context.moveTo(stars[first].x, stars[first].y);
+          context.lineTo(stars[second].x, stars[second].y);
+        }
+      }
+    }
+    context.stroke();
+    context.strokeStyle = "rgba(56,189,248,.12)";
+    stars.forEach((star) => {
+      const distance = Math.hypot(star.x - pointer.x, star.y - pointer.y);
+      if (distance > 170) return;
+      context.globalAlpha = 1 - distance / 170;
+      context.beginPath();
+      context.moveTo(star.x, star.y);
+      context.lineTo(pointer.x, pointer.y);
+      context.stroke();
+    });
+    context.restore();
+
+    shootingStars = shootingStars.filter((star) => star.life > 0);
+    context.save();
+    context.lineWidth = 2;
+    context.lineCap = "round";
+    context.shadowBlur = 10;
+    shootingStars.forEach((star) => {
+      star.x += star.vx;
+      star.y += star.vy;
+      star.life -= .012;
+      const tail = context.createLinearGradient(
+        star.x - star.vx * 18,
+        star.y - star.vy * 18,
+        star.x,
+        star.y
+      );
+      tail.addColorStop(0, "rgba(255,255,255,0)");
+      tail.addColorStop(1, `rgba(${star.color},${star.life})`);
+      context.strokeStyle = tail;
+      context.shadowColor = `rgba(${star.color},.42)`;
+      context.beginPath();
+      context.moveTo(star.x - star.vx * 18, star.y - star.vy * 18);
+      context.lineTo(star.x, star.y);
+      context.stroke();
+    });
+    context.restore();
 
     sparkles = sparkles.filter((sparkle) => sparkle.life > 0);
     sparkles.forEach((sparkle) => {
       sparkle.life -= .035;
+      sparkle.x += sparkle.vx || 0;
+      sparkle.y += sparkle.vy || 0;
       context.beginPath();
       const visibleLife = Math.max(0, sparkle.life);
       context.fillStyle = `rgba(249,168,212,${visibleLife})`;
