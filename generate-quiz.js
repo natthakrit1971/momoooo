@@ -30,10 +30,12 @@ function isValidQuestion(question) {
   if (!question.choices.every((choice) => typeof choice === "string" && choice.trim())) return false;
   if (!Number.isInteger(question.answer) || question.answer < 0 || question.answer > 3) return false;
   if (typeof question.explanation !== "string") return false;
-  if (!question.explanation.startsWith("หลักการ:") ||
-      !question.explanation.includes("\nวิธีคิด:") ||
-      !question.explanation.includes("\nศัพท์สำคัญ:") ||
-      !/[A-Za-z]/.test(question.explanation.slice(question.explanation.lastIndexOf("\nศัพท์สำคัญ:")))) {
+  const explanation = question.explanation.trim()
+    .replace(/^[\s"'`*_#\-–—•]+|[\s"'`*_#\-–—•]+$/g, "");
+  if (!explanation.includes("หลักการ:") ||
+      !explanation.includes("\nวิธีคิด:") ||
+      !explanation.includes("\nศัพท์สำคัญ:") ||
+      !/[A-Za-z]/.test(explanation.slice(explanation.lastIndexOf("\nศัพท์สำคัญ:")))) {
     return false;
   }
   return ![question.question, ...question.choices, question.explanation]
@@ -77,7 +79,10 @@ export default async function handler(req, res) {
               text: `สร้างข้อสอบหมวด ${category} ระดับ ${difficulty} จำนวน ${count} ข้อพอดี`
             }]
           }],
-          generationConfig: { responseMimeType: "application/json" }
+          generationConfig: {
+            responseMimeType: "application/json",
+            thinkingConfig: { thinkingBudget: 0 }
+          }
         })
       }
     );

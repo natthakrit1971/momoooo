@@ -966,7 +966,9 @@ function isValidGeneratedQuiz(questions, target) {
       question.answer >= 0 &&
       question.answer <= 3 &&
       typeof question.explanation === "string" &&
-      question.explanation.startsWith("หลักการ:") &&
+      question.explanation.trim()
+        .replace(/^[\s"'`*_#\-–—•]+|[\s"'`*_#\-–—•]+$/g, "")
+        .includes("หลักการ:") &&
       question.explanation.includes("\nวิธีคิด:") &&
       question.explanation.includes("\nศัพท์สำคัญ:")
     );
@@ -984,7 +986,7 @@ async function buildQuizQuestions() {
   setQuizControlsDisabled(true);
   showQuizLoading();
   try {
-    timeoutId = setTimeout(() => controller.abort(), 18000);
+    timeoutId = setTimeout(() => controller.abort(), 30000);
     const response = await fetch("/api/generate-quiz", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1003,7 +1005,8 @@ async function buildQuizQuestions() {
     questions = generatedQuestions;
   } catch (error) {
     if (generation !== quizBuildGeneration) return false;
-    console.error("AI quiz generation failed; using local questions", error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`AI quiz generation failed; using local questions: ${errorMessage}`, error);
     try {
       questions = buildLocalQuizQuestions(target);
       showToast("สร้างข้อสอบ AI ไม่สำเร็จ ใช้คลังข้อสอบสำรองแทน");
